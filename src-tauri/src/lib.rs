@@ -118,6 +118,20 @@ fn load_workbuddy_models() -> Result<Vec<Value>, String> {
 }
 
 #[tauri::command]
+fn delete_workbuddy_model(model_id: String) -> Result<Vec<Value>, String> {
+    let model_id = required_trimmed(model_id, "模型 ID")?;
+    let mut models = read_workbuddy_models()?;
+    let removed = remove_model_by_id(&mut models, &model_id);
+
+    if removed == 0 {
+        return Err("未找到要删除的模型".to_string());
+    }
+
+    write_workbuddy_models(&models)?;
+    Ok(models)
+}
+
+#[tauri::command]
 fn load_providers() -> Result<Vec<Provider>, String> {
     read_providers()
 }
@@ -772,6 +786,12 @@ fn merge_model_object(existing: &mut Value, replacement: Value) -> Result<(), St
     Ok(())
 }
 
+fn remove_model_by_id(models: &mut Vec<Value>, model_id: &str) -> usize {
+    let original_len = models.len();
+    models.retain(|model| model.get("id").and_then(Value::as_str) != Some(model_id));
+    original_len - models.len()
+}
+
 fn format_model_fetch_error(status: StatusCode, body: &str) -> String {
     let body_preview = body.chars().take(500).collect::<String>();
     format!(
@@ -791,6 +811,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_paths,
             load_workbuddy_models,
+            delete_workbuddy_model,
             load_providers,
             save_provider,
             delete_provider,
@@ -836,5 +857,22 @@ mod tests {
                 .or_else(|| info.as_ref().and_then(|item| item.max_output)),
             Some(64_000)
         );
+    }
+
+    #[test]
+    fn remove_model_by_id_only_removes_exact_matches() {
+        let mut models = vec![
+            json!({"id": "target", "name": "Target"}),
+            json!({"id": "target-2", "name": "Other"}),
+            json!({"name": "No id"}),
+        ];
+
+        assert_eq!(remove_model_by_id(&mut models, "target"), 1);
+        assert_eq!(models.len(), 2);
+        assert_eq!(
+            models[0].get("id").and_then(Value::as_str),
+            Some("target-2")
+        );
+        assert_eq!(models[1].get("name").and_then(Value::as_str), Some("No id"));
     }
 }

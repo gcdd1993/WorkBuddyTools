@@ -180,12 +180,10 @@ td {
   font-size: 12px;
 }
 
-.url-cell {
-  color: #475569;
-  max-width: 360px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.action-column,
+.action-cell {
+  text-align: center;
+  width: 68px;
 }
 
 .provider-form {

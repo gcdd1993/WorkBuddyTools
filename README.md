@@ -19,6 +19,7 @@
   - `maxInputTokens`
   - `maxOutputTokens`
 - 将选中的模型写入 WorkBuddy 配置。
+- 从模型列表删除已配置模型。
 - 写入 `models.json` 前自动创建备份。
 - 使用带齿轮角标的 WorkBuddy 图标。
 
@@ -66,7 +67,7 @@ C:\Users\PC\.workbuddy\model-providers.json
 - `url` 自动规范化为 `/v1/chat/completions`。
 - 如果模型 ID 已存在，则更新该条模型配置。
 - 如果模型 ID 不存在，则追加到 `models.json`。
-- 写入前会备份原文件，例如：
+- 添加、更新或删除模型前会备份原文件，例如：
 
 ```text
 models.json.20260629T120000Z.bak
@@ -113,6 +114,7 @@ maxOutputTokens = 384000
 6. 勾选要添加到 WorkBuddy 的模型。
 7. 点击“添加到 WorkBuddy”。
 8. 切换到“模型列表”查看写入结果。
+9. 在“模型列表”中点击删除按钮可移除不需要的模型。
 
 WorkBuddy 不需要重启即可读取新的模型配置。
 

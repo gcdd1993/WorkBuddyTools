@@ -101,6 +101,7 @@ function App() {
   const [fetchingModels, setFetchingModels] = useState(false);
   const [savingProvider, setSavingProvider] = useState(false);
   const [addingModels, setAddingModels] = useState(false);
+  const [deletingModelId, setDeletingModelId] = useState<string>("");
   const [message, setMessage] = useState<string>("");
   const [error, setError] = useState<string>("");
 
@@ -259,6 +260,35 @@ function App() {
     }
   }
 
+  async function handleDeleteWorkBuddyModel(model: WorkBuddyModel) {
+    const modelId = typeof model.id === "string" ? model.id : "";
+    if (!modelId) {
+      setError("模型 ID 为空，无法删除");
+      return;
+    }
+
+    const label = typeof model.name === "string" && model.name.length > 0 ? model.name : modelId;
+    if (!window.confirm(`确认删除模型 ${label}？`)) {
+      return;
+    }
+
+    setDeletingModelId(modelId);
+    setError("");
+    setMessage("");
+
+    try {
+      const nextModels = await invoke<WorkBuddyModel[]>("delete_workbuddy_model", {
+        modelId,
+      });
+      setModels(nextModels);
+      setMessage(`已删除模型 ${label}`);
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setDeletingModelId("");
+    }
+  }
+
   function toggleModelSelection(modelId: string) {
     setSelectedModelIds((current) => {
       const next = new Set(current);
@@ -312,7 +342,13 @@ function App() {
       {message ? <div className="notice success">{message}</div> : null}
 
       {activeTab === "models" ? (
-        <ModelsTab models={models} onRefresh={refreshModelsOnly} loading={loading} />
+        <ModelsTab
+          models={models}
+          onRefresh={refreshModelsOnly}
+          onDeleteModel={handleDeleteWorkBuddyModel}
+          loading={loading}
+          deletingModelId={deletingModelId}
+        />
       ) : (
         <ProvidersTab
           providers={providers}
@@ -352,11 +388,15 @@ function App() {
 function ModelsTab({
   models,
   loading,
+  deletingModelId,
   onRefresh,
+  onDeleteModel,
 }: {
   models: WorkBuddyModel[];
   loading: boolean;
+  deletingModelId: string;
   onRefresh: () => void;
+  onDeleteModel: (model: WorkBuddyModel) => void;
 }) {
   return (
     <section className="panel">
@@ -377,10 +417,9 @@ function ModelsTab({
             <tr>
               <th>ID</th>
               <th>名称</th>
-              <th>供应商</th>
-              <th>请求地址</th>
               <th>Token 上限</th>
               <th>能力</th>
+              <th className="action-column">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -388,9 +427,7 @@ function ModelsTab({
               <tr key={`${model.id ?? "unknown"}-${index}`}>
                 <td className="mono">{stringValue(model.id)}</td>
                 <td>{stringValue(model.name)}</td>
-                <td>{stringValue(model.vendor)}</td>
-                <td className="url-cell">{stringValue(model.url)}</td>
-                <td>
+                <td className="action-cell">
                   <TokenLimits
                     maxInputTokens={numberValue(model.maxInputTokens)}
                     maxOutputTokens={numberValue(model.maxOutputTokens)}
@@ -405,6 +442,25 @@ function ModelsTab({
                       useCustomProtocol: Boolean(model.useCustomProtocol),
                     }}
                   />
+                </td>
+                <td>
+                  <button
+                    className="icon-button danger"
+                    type="button"
+                    title="删除模型"
+                    disabled={
+                      !model.id ||
+                      deletingModelId === model.id ||
+                      loading
+                    }
+                    onClick={() => onDeleteModel(model)}
+                  >
+                    {deletingModelId === model.id ? (
+                      <Loader2 className="spin" size={16} />
+                    ) : (
+                      <Trash2 size={16} />
+                    )}
+                  </button>
                 </td>
               </tr>
             ))}
