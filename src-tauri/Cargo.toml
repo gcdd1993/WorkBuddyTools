@@ -1,6 +1,6 @@
 [package]
 name = "workbuddy-model-config"
-version = "0.2.1"
+version = "0.2.2"
 description = "WorkBuddy third-party model configuration tool"
 authors = ["WorkBuddyTools"]
 edition = "2021"
