@@ -6,6 +6,10 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "tauri": "tauri",
+    "test:layout": "node --test tests/layoutCss.test.mjs",
+    "test:provider-workflow": "tsc --target ES2020 --module ES2020 --moduleResolution bundler --outDir .tmp-tests --noEmit false --skipLibCheck true src/providerWorkflow.ts && node --test tests/providerWorkflow.test.mjs",
+    "test:runtime": "tsc --target ES2020 --module ES2020 --moduleResolution bundler --outDir .tmp-tests --noEmit false --skipLibCheck true src/tauriRuntime.ts && node --test tests/tauriRuntime.test.mjs",
+    "test:theme": "tsc --target ES2020 --module ES2020 --moduleResolution bundler --outDir .tmp-tests --noEmit false --skipLibCheck true src/theme.ts && node --test tests/theme.test.mjs",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build"
   },

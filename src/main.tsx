@@ -1,16 +1,36 @@
-import React, { FormEvent, useEffect, useMemo, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { invoke } from "@tauri-apps/api/core";
 import {
   Check,
   Database,
+  Eye,
+  EyeOff,
   KeyRound,
   Loader2,
+  Moon,
+  Pencil,
   Plus,
   RefreshCcw,
   Server,
+  Sun,
   Trash2,
+  X,
 } from "lucide-react";
+import {
+  applyThemeToDocument,
+  getSystemPrefersDark,
+  readStoredTheme,
+  resolveInitialTheme,
+  ThemeMode,
+  toggleTheme,
+  writeStoredTheme,
+} from "./theme";
+import { invokeCommand } from "./tauriRuntime";
+import {
+  buildProviderForm,
+  ProviderFormValue,
+  shouldAutoFetchProviderModels,
+} from "./providerWorkflow";
 import "./styles.css";
 
 type TabKey = "models" | "providers";
@@ -75,26 +95,19 @@ type AppPaths = {
   providersFile: string;
 };
 
-type ProviderForm = {
-  id?: string;
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-};
-
-const emptyProviderForm: ProviderForm = {
-  name: "",
-  baseUrl: "",
-  apiKey: "",
-};
+type ProviderForm = ProviderFormValue;
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("models");
+  const [theme, setTheme] = useState<ThemeMode>(() =>
+    resolveAppTheme(),
+  );
   const [paths, setPaths] = useState<AppPaths | null>(null);
   const [models, setModels] = useState<WorkBuddyModel[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
-  const [providerForm, setProviderForm] = useState<ProviderForm>(emptyProviderForm);
+  const [providerForm, setProviderForm] = useState<ProviderForm>(() => buildProviderForm());
+  const [isProviderDialogOpen, setIsProviderDialogOpen] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<ProviderModel[]>([]);
   const [selectedModelIds, setSelectedModelIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -104,16 +117,52 @@ function App() {
   const [deletingModelId, setDeletingModelId] = useState<string>("");
   const [message, setMessage] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const lastAutoFetchedProviderId = useRef("");
 
   useEffect(() => {
     void refreshAll();
   }, []);
 
   useEffect(() => {
+    applyThemeToDocument(theme);
+    writeStoredTheme(theme);
+  }, [theme]);
+
+  useEffect(() => {
+    if (!message) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setMessage(""), 4000);
+    return () => window.clearTimeout(timeoutId);
+  }, [message]);
+
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => setError(""), 6000);
+    return () => window.clearTimeout(timeoutId);
+  }, [error]);
+
+  useEffect(() => {
     if (!selectedProviderId && providers.length > 0) {
       setSelectedProviderId(providers[0].id);
     }
   }, [providers, selectedProviderId]);
+
+  useEffect(() => {
+    if (
+      shouldAutoFetchProviderModels({
+        activeTab,
+        selectedProviderId,
+        lastFetchedProviderId: lastAutoFetchedProviderId.current,
+      })
+    ) {
+      void fetchModelsForProvider(selectedProviderId, { announce: false });
+    }
+  }, [activeTab, selectedProviderId]);
 
   const selectedProvider = useMemo(
     () => providers.find((provider) => provider.id === selectedProviderId),
@@ -129,9 +178,9 @@ function App() {
     setError("");
     try {
       const [nextPaths, nextModels, nextProviders] = await Promise.all([
-        invoke<AppPaths>("get_paths"),
-        invoke<WorkBuddyModel[]>("load_workbuddy_models"),
-        invoke<Provider[]>("load_providers"),
+        invokeCommand<AppPaths>("get_paths"),
+        invokeCommand<WorkBuddyModel[]>("load_workbuddy_models"),
+        invokeCommand<Provider[]>("load_providers"),
       ]);
 
       setPaths(nextPaths);
@@ -147,7 +196,7 @@ function App() {
   async function refreshModelsOnly() {
     setError("");
     try {
-      setModels(await invoke<WorkBuddyModel[]>("load_workbuddy_models"));
+      setModels(await invokeCommand<WorkBuddyModel[]>("load_workbuddy_models"));
       setMessage("已重新读取 WorkBuddy 模型配置");
     } catch (err) {
       setError(toErrorMessage(err));
@@ -161,13 +210,23 @@ function App() {
     setMessage("");
 
     try {
-      const nextProviders = await invoke<Provider[]>("save_provider", {
+      const nextProviders = await invokeCommand<Provider[]>("save_provider", {
         input: providerForm,
       });
       setProviders(nextProviders);
       const saved = findSavedProvider(nextProviders, providerForm);
-      setSelectedProviderId(saved?.id ?? nextProviders[0]?.id ?? "");
-      setProviderForm(emptyProviderForm);
+      const savedProviderId = saved?.id ?? nextProviders[0]?.id ?? "";
+      const selectedBeforeSave = selectedProviderId;
+      setSelectedProviderId(savedProviderId);
+      setProviderForm(buildProviderForm());
+      setIsProviderDialogOpen(false);
+      if (
+        activeTab === "providers" &&
+        savedProviderId.length > 0 &&
+        savedProviderId === selectedBeforeSave
+      ) {
+        await fetchModelsForProvider(savedProviderId, { announce: false });
+      }
       setMessage("供应商配置已保存");
     } catch (err) {
       setError(toErrorMessage(err));
@@ -177,11 +236,17 @@ function App() {
   }
 
   async function handleDeleteProvider(providerId: string) {
+    const provider = providers.find((item) => item.id === providerId);
+    const label = provider?.name ?? providerId;
+    if (!window.confirm(`确认删除供应商 ${label}？`)) {
+      return;
+    }
+
     setError("");
     setMessage("");
 
     try {
-      const nextProviders = await invoke<Provider[]>("delete_provider", {
+      const nextProviders = await invokeCommand<Provider[]>("delete_provider", {
         providerId,
       });
       setProviders(nextProviders);
@@ -196,33 +261,45 @@ function App() {
     }
   }
 
-  async function handleFetchModels() {
-    if (!selectedProviderId) {
+  async function fetchModelsForProvider(
+    providerId: string,
+    { announce = true }: { announce?: boolean } = {},
+  ) {
+    if (!providerId) {
       setError("请先选择供应商");
       return;
     }
 
     setFetchingModels(true);
     setError("");
-    setMessage("");
+    if (announce) {
+      setMessage("");
+    }
 
     try {
-      const result = await invoke<FetchModelsResult>("fetch_provider_models", {
-        providerId: selectedProviderId,
+      const result = await invokeCommand<FetchModelsResult>("fetch_provider_models", {
+        providerId,
       });
       setFetchedModels(result.models);
       setSelectedModelIds(new Set());
+      lastAutoFetchedProviderId.current = providerId;
       setProviders((current) =>
         current.map((provider) =>
           provider.id === result.provider.id ? result.provider : provider,
         ),
       );
-      setMessage(`已拉取 ${result.models.length} 个模型`);
+      if (announce) {
+        setMessage(`已拉取 ${result.models.length} 个模型`);
+      }
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {
       setFetchingModels(false);
     }
+  }
+
+  async function handleFetchModels() {
+    await fetchModelsForProvider(selectedProviderId);
   }
 
   async function handleAddModels() {
@@ -242,7 +319,7 @@ function App() {
     setMessage("");
 
     try {
-      const result = await invoke<AddModelsResult>("add_models_to_workbuddy", {
+      const result = await invokeCommand<AddModelsResult>("add_models_to_workbuddy", {
         payload: {
           providerId: selectedProviderId,
           modelIds,
@@ -277,7 +354,7 @@ function App() {
     setMessage("");
 
     try {
-      const nextModels = await invoke<WorkBuddyModel[]>("delete_workbuddy_model", {
+      const nextModels = await invokeCommand<WorkBuddyModel[]>("delete_workbuddy_model", {
         modelId,
       });
       setModels(nextModels);
@@ -309,37 +386,103 @@ function App() {
     setSelectedModelIds(new Set());
   }
 
+  function openCreateProviderDialog() {
+    setProviderForm(buildProviderForm());
+    setIsProviderDialogOpen(true);
+  }
+
+  function openEditProviderDialog(provider: Provider) {
+    setProviderForm(buildProviderForm(provider));
+    setIsProviderDialogOpen(true);
+  }
+
+  function closeProviderDialog() {
+    if (savingProvider) {
+      return;
+    }
+    setIsProviderDialogOpen(false);
+    setProviderForm(buildProviderForm());
+  }
+
+  function handleProviderSelect(providerId: string) {
+    if (providerId === selectedProviderId) {
+      return;
+    }
+    setSelectedProviderId(providerId);
+    setFetchedModels([]);
+    setSelectedModelIds(new Set());
+  }
+
   return (
     <main className="app-shell">
+      <div className="toast-region" aria-live="polite" aria-atomic="true">
+        {error ? <div className="toast error" role="alert">{error}</div> : null}
+        {message ? <div className="toast success" role="status">{message}</div> : null}
+      </div>
+
       <header className="app-header">
-        <div>
+        <div className="title-block">
+          <span className="eyebrow">WorkBuddy Tools</span>
           <h1>WorkBuddy 模型配置</h1>
           <p>{paths?.modelsFile ?? "读取 WorkBuddy 配置中..."}</p>
         </div>
-        <button className="icon-button" onClick={refreshAll} disabled={loading} title="刷新">
-          {loading ? <Loader2 className="spin" size={18} /> : <RefreshCcw size={18} />}
-        </button>
+        <div className="header-actions">
+          <div className="summary-pill" aria-label={`已配置 ${models.length} 个模型`}>
+            <Database size={16} />
+            <span>{models.length}</span>
+            <small>模型</small>
+          </div>
+          <div className="summary-pill" aria-label={`已配置 ${providers.length} 个供应商`}>
+            <Server size={16} />
+            <span>{providers.length}</span>
+            <small>供应商</small>
+          </div>
+          <button
+            className="icon-button theme-toggle"
+            type="button"
+            onClick={() => setTheme((current) => toggleTheme(current))}
+            title={theme === "dark" ? "切换到白天皮肤" : "切换到黑夜皮肤"}
+            aria-label={theme === "dark" ? "切换到白天皮肤" : "切换到黑夜皮肤"}
+          >
+            {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={refreshAll}
+            disabled={loading}
+            title="刷新全部配置"
+            aria-label="刷新全部配置"
+          >
+            {loading ? <Loader2 className="spin" size={18} /> : <RefreshCcw size={18} />}
+          </button>
+        </div>
       </header>
 
-      <nav className="tabs" aria-label="配置视图">
+      <nav className="tabs" aria-label="配置视图" role="tablist">
         <button
           className={activeTab === "models" ? "active" : ""}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "models"}
           onClick={() => setActiveTab("models")}
         >
           <Database size={16} />
-          模型列表
+          <span>模型列表</span>
+          <span className="tab-count">{models.length}</span>
         </button>
         <button
           className={activeTab === "providers" ? "active" : ""}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "providers"}
           onClick={() => setActiveTab("providers")}
         >
           <Server size={16} />
-          供应商
+          <span>供应商</span>
+          <span className="tab-count">{providers.length}</span>
         </button>
       </nav>
-
-      {error ? <div className="notice error">{error}</div> : null}
-      {message ? <div className="notice success">{message}</div> : null}
 
       {activeTab === "models" ? (
         <ModelsTab
@@ -355,6 +498,7 @@ function App() {
           selectedProvider={selectedProvider}
           selectedProviderId={selectedProviderId}
           providerForm={providerForm}
+          isProviderDialogOpen={isProviderDialogOpen}
           fetchedModels={fetchedModels}
           selectedModelIds={selectedModelIds}
           configuredIds={configuredIds}
@@ -362,16 +506,11 @@ function App() {
           savingProvider={savingProvider}
           addingModels={addingModels}
           paths={paths}
-          onProviderSelect={setSelectedProviderId}
+          onProviderCreate={openCreateProviderDialog}
+          onProviderSelect={handleProviderSelect}
           onProviderFormChange={setProviderForm}
-          onProviderEdit={(provider) =>
-            setProviderForm({
-              id: provider.id,
-              name: provider.name,
-              baseUrl: provider.baseUrl,
-              apiKey: provider.apiKey,
-            })
-          }
+          onProviderEdit={openEditProviderDialog}
+          onProviderDialogClose={closeProviderDialog}
           onProviderDelete={handleDeleteProvider}
           onProviderSave={handleSaveProvider}
           onFetchModels={handleFetchModels}
@@ -399,13 +538,18 @@ function ModelsTab({
   onDeleteModel: (model: WorkBuddyModel) => void;
 }) {
   return (
-    <section className="panel">
+    <section className="panel" aria-labelledby="models-title">
       <div className="panel-header">
         <div>
-          <h2>已配置模型</h2>
+          <h2 id="models-title">已配置模型</h2>
           <p>{models.length} 个 WorkBuddy 模型</p>
         </div>
-        <button className="secondary-button" onClick={onRefresh} disabled={loading}>
+        <button
+          className="secondary-button"
+          type="button"
+          onClick={onRefresh}
+          disabled={loading}
+        >
           <RefreshCcw size={16} />
           重新读取
         </button>
@@ -427,7 +571,7 @@ function ModelsTab({
               <tr key={`${model.id ?? "unknown"}-${index}`}>
                 <td className="mono">{stringValue(model.id)}</td>
                 <td>{stringValue(model.name)}</td>
-                <td className="action-cell">
+                <td className="token-cell">
                   <TokenLimits
                     maxInputTokens={numberValue(model.maxInputTokens)}
                     maxOutputTokens={numberValue(model.maxOutputTokens)}
@@ -448,6 +592,7 @@ function ModelsTab({
                     className="icon-button danger"
                     type="button"
                     title="删除模型"
+                    aria-label={`删除模型 ${stringValue(model.name)}`}
                     disabled={
                       !model.id ||
                       deletingModelId === model.id ||
@@ -478,6 +623,7 @@ function ProvidersTab({
   selectedProvider,
   selectedProviderId,
   providerForm,
+  isProviderDialogOpen,
   fetchedModels,
   selectedModelIds,
   configuredIds,
@@ -485,9 +631,11 @@ function ProvidersTab({
   savingProvider,
   addingModels,
   paths,
+  onProviderCreate,
   onProviderSelect,
   onProviderFormChange,
   onProviderEdit,
+  onProviderDialogClose,
   onProviderDelete,
   onProviderSave,
   onFetchModels,
@@ -500,6 +648,7 @@ function ProvidersTab({
   selectedProvider?: Provider;
   selectedProviderId: string;
   providerForm: ProviderForm;
+  isProviderDialogOpen: boolean;
   fetchedModels: ProviderModel[];
   selectedModelIds: Set<string>;
   configuredIds: Set<string>;
@@ -507,9 +656,11 @@ function ProvidersTab({
   savingProvider: boolean;
   addingModels: boolean;
   paths: AppPaths | null;
+  onProviderCreate: () => void;
   onProviderSelect: (providerId: string) => void;
   onProviderFormChange: (next: ProviderForm) => void;
   onProviderEdit: (provider: Provider) => void;
+  onProviderDialogClose: () => void;
   onProviderDelete: (providerId: string) => void;
   onProviderSave: (event: FormEvent) => void;
   onFetchModels: () => void;
@@ -520,69 +671,17 @@ function ProvidersTab({
 }) {
   return (
     <section className="providers-grid">
-      <div className="panel">
+      <div className="panel provider-list-panel" aria-labelledby="providers-title">
         <div className="panel-header">
           <div>
-            <h2>供应商配置</h2>
+            <h2 id="providers-title">供应商列表</h2>
             <p>{paths?.providersFile ?? "model-providers.json"}</p>
           </div>
+          <button className="primary-button" type="button" onClick={onProviderCreate}>
+            <Plus size={16} />
+            添加供应商
+          </button>
         </div>
-
-        <form className="provider-form" onSubmit={onProviderSave}>
-          <label>
-            <span>供应商名称</span>
-            <input
-              value={providerForm.name}
-              onChange={(event) =>
-                onProviderFormChange({ ...providerForm, name: event.target.value })
-              }
-              placeholder="DeepSeek"
-              autoComplete="off"
-            />
-          </label>
-          <label>
-            <span>API 请求地址</span>
-            <input
-              value={providerForm.baseUrl}
-              onChange={(event) =>
-                onProviderFormChange({ ...providerForm, baseUrl: event.target.value })
-              }
-              placeholder="https://api.example.com/v1"
-              autoComplete="off"
-            />
-          </label>
-          <label>
-            <span>API Key</span>
-            <div className="key-input">
-              <KeyRound size={16} />
-              <input
-                value={providerForm.apiKey}
-                onChange={(event) =>
-                  onProviderFormChange({ ...providerForm, apiKey: event.target.value })
-                }
-                placeholder="sk-..."
-                type="password"
-                autoComplete="off"
-              />
-            </div>
-          </label>
-
-          <div className="form-actions">
-            <button className="primary-button" type="submit" disabled={savingProvider}>
-              {savingProvider ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
-              {providerForm.id ? "保存修改" : "添加供应商"}
-            </button>
-            {providerForm.id ? (
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => onProviderFormChange(emptyProviderForm)}
-              >
-                取消编辑
-              </button>
-            ) : null}
-          </div>
-        </form>
 
         <div className="provider-list">
           {providers.map((provider) => (
@@ -593,6 +692,7 @@ function ProvidersTab({
               <button
                 className="provider-main"
                 type="button"
+                aria-pressed={provider.id === selectedProviderId}
                 onClick={() => onProviderSelect(provider.id)}
               >
                 <strong>{provider.name}</strong>
@@ -603,47 +703,59 @@ function ProvidersTab({
                 type="button"
                 onClick={() => onProviderEdit(provider)}
                 title="编辑供应商"
+                aria-label={`编辑供应商 ${provider.name}`}
               >
-                <Check size={16} />
+                <Pencil size={16} />
               </button>
               <button
                 className="icon-button danger"
                 type="button"
                 onClick={() => onProviderDelete(provider.id)}
                 title="删除供应商"
+                aria-label={`删除供应商 ${provider.name}`}
               >
                 <Trash2 size={16} />
               </button>
             </div>
           ))}
+          {providers.length === 0 ? <EmptyState label="还没有供应商配置" /> : null}
         </div>
-
-        {providers.length === 0 ? <EmptyState label="还没有供应商配置" /> : null}
       </div>
 
-      <div className="panel">
+      <div className="panel" aria-labelledby="provider-models-title">
         <div className="panel-header">
           <div>
-            <h2>供应商模型</h2>
+            <h2 id="provider-models-title">供应商模型</h2>
             <p>{selectedProvider ? selectedProvider.name : "请选择供应商"}</p>
           </div>
           <button
             className="secondary-button"
+            type="button"
             onClick={onFetchModels}
             disabled={!selectedProvider || fetchingModels}
           >
             {fetchingModels ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
-            拉取模型
+            重新拉取
           </button>
         </div>
 
         <div className="selection-toolbar">
           <span>{selectedModelIds.size} / {fetchedModels.length} 已选</span>
           <div>
-            <button className="text-button" type="button" onClick={onSelectAll}>
+            <button
+              className="text-button"
+              type="button"
+              onClick={onSelectAll}
+              disabled={fetchedModels.length === 0}
+            >
               全选
             </button>
-            <button className="text-button" type="button" onClick={onClearSelection}>
+            <button
+              className="text-button"
+              type="button"
+              onClick={onClearSelection}
+              disabled={selectedModelIds.size === 0}
+            >
               清空
             </button>
           </div>
@@ -658,19 +770,24 @@ function ProvidersTab({
                 className={`model-choice ${selected ? "selected" : ""}`}
                 key={model.id}
                 type="button"
+                aria-pressed={selected}
                 onClick={() => onToggleModel(model.id)}
               >
                 <span className="checkbox">{selected ? <Check size={14} /> : null}</span>
                 <span className="model-choice-main">
-                  <span className="mono">{model.id}</span>
-                  <TokenLimits
-                    maxInputTokens={model.maxInputTokens}
-                    maxOutputTokens={model.maxOutputTokens}
-                    compact
-                  />
-                  <CapabilityBadges capabilities={model.capabilities} compact />
+                  <span className="model-choice-title-row">
+                    <span className="mono">{model.id}</span>
+                    {configured ? <span className="configured-pill">已在 WorkBuddy</span> : null}
+                  </span>
+                  <span className="model-choice-meta">
+                    <TokenLimits
+                      maxInputTokens={model.maxInputTokens}
+                      maxOutputTokens={model.maxOutputTokens}
+                      compact
+                    />
+                    <CapabilityBadges capabilities={model.capabilities} compact />
+                  </span>
                 </span>
-                {configured ? <span className="configured-pill">已在 WorkBuddy</span> : null}
               </button>
             );
           })}
@@ -690,7 +807,151 @@ function ProvidersTab({
           </button>
         </div>
       </div>
+
+      {isProviderDialogOpen ? (
+        <ProviderDialog
+          providerForm={providerForm}
+          savingProvider={savingProvider}
+          onProviderFormChange={onProviderFormChange}
+          onProviderSave={onProviderSave}
+          onClose={onProviderDialogClose}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function ProviderDialog({
+  providerForm,
+  savingProvider,
+  onProviderFormChange,
+  onProviderSave,
+  onClose,
+}: {
+  providerForm: ProviderForm;
+  savingProvider: boolean;
+  onProviderFormChange: (next: ProviderForm) => void;
+  onProviderSave: (event: FormEvent) => void;
+  onClose: () => void;
+}) {
+  const [showApiKey, setShowApiKey] = useState(false);
+  const title = providerForm.id ? "编辑供应商" : "添加供应商";
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section
+        className="provider-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="provider-dialog-title"
+      >
+        <div className="dialog-header">
+          <div>
+            <h2 id="provider-dialog-title">{title}</h2>
+            <p>保存后会回到供应商列表</p>
+          </div>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={onClose}
+            disabled={savingProvider}
+            aria-label="关闭供应商表单"
+            title="关闭"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <form className="provider-form dialog-form" onSubmit={onProviderSave}>
+          <label>
+            <span className="field-label">
+              供应商名称
+              <small>必填</small>
+            </span>
+            <input
+              value={providerForm.name}
+              onChange={(event) =>
+                onProviderFormChange({ ...providerForm, name: event.target.value })
+              }
+              placeholder="DeepSeek"
+              autoComplete="organization"
+              autoFocus
+              required
+            />
+          </label>
+          <label>
+            <span className="field-label">
+              API 请求地址
+              <small>必填</small>
+            </span>
+            <input
+              value={providerForm.baseUrl}
+              onChange={(event) =>
+                onProviderFormChange({ ...providerForm, baseUrl: event.target.value })
+              }
+              placeholder="https://api.example.com/v1"
+              type="url"
+              autoComplete="url"
+              required
+            />
+          </label>
+          <label>
+            <span className="field-label">
+              API Key
+              <small>必填</small>
+            </span>
+            <div className="key-input">
+              <KeyRound size={16} aria-hidden="true" />
+              <input
+                value={providerForm.apiKey}
+                onChange={(event) =>
+                  onProviderFormChange({ ...providerForm, apiKey: event.target.value })
+                }
+                placeholder="sk-..."
+                type={showApiKey ? "text" : "password"}
+                autoComplete="new-password"
+                required
+              />
+              <button
+                className="input-icon-button"
+                type="button"
+                onClick={() => setShowApiKey((current) => !current)}
+                aria-label={showApiKey ? "隐藏 API Key" : "显示 API Key"}
+                title={showApiKey ? "隐藏 API Key" : "显示 API Key"}
+              >
+                {showApiKey ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </label>
+
+          <div className="dialog-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={onClose}
+              disabled={savingProvider}
+            >
+              取消
+            </button>
+            <button className="primary-button" type="submit" disabled={savingProvider}>
+              {savingProvider ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+              {providerForm.id ? "保存修改" : "添加供应商"}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 
@@ -708,13 +969,20 @@ function CapabilityBadges({
     ["自定义协议", capabilities.useCustomProtocol],
   ] as const;
 
+  const className = `badges ${compact ? "compact" : ""}`;
+  const content = items.map(([label, enabled]) => (
+    <span className={enabled ? "badge enabled" : "badge"} key={label}>
+      {label}
+    </span>
+  ));
+
+  if (compact) {
+    return <span className={className}>{content}</span>;
+  }
+
   return (
-    <div className={`badges ${compact ? "compact" : ""}`}>
-      {items.map(([label, enabled]) => (
-        <span className={enabled ? "badge enabled" : "badge"} key={label}>
-          {label}
-        </span>
-      ))}
+    <div className={className}>
+      {content}
     </div>
   );
 }
@@ -728,16 +996,31 @@ function TokenLimits({
   maxOutputTokens?: number;
   compact?: boolean;
 }) {
-  return (
-    <div className={`token-limits ${compact ? "compact" : ""}`}>
+  const className = `token-limits ${compact ? "compact" : ""}`;
+  const content = (
+    <>
       <span>输入 {formatTokenLimit(maxInputTokens)}</span>
       <span>输出 {formatTokenLimit(maxOutputTokens)}</span>
+    </>
+  );
+
+  if (compact) {
+    return <span className={className}>{content}</span>;
+  }
+
+  return (
+    <div className={className}>
+      {content}
     </div>
   );
 }
 
 function EmptyState({ label }: { label: string }) {
   return <div className="empty-state">{label}</div>;
+}
+
+function resolveAppTheme() {
+  return resolveInitialTheme(readStoredTheme(), getSystemPrefersDark());
 }
 
 function stringValue(value: unknown) {
@@ -781,6 +1064,8 @@ function findSavedProvider(providers: Provider[], form: ProviderForm) {
   }
   return providers.find((provider) => provider.name === form.name);
 }
+
+applyThemeToDocument(resolveAppTheme());
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
