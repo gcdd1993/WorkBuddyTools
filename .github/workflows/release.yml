@@ -133,7 +133,7 @@ jobs:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'workbuddy-model-config-v__VERSION__' }}
           releaseName: ${{ github.ref_type == 'tag' && format('WorkBuddy Model Config {0}', github.ref_name) || 'WorkBuddy Model Config v__VERSION__' }}
           releaseBody: "Automated Tauri desktop bundles. Assets are unsigned unless signing secrets are configured."
-          releaseDraft: true
+          releaseDraft: ${{ github.ref_type != 'tag' }}
           prerelease: false
           uploadWorkflowArtifacts: true
           updaterJsonPreferNsis: true
