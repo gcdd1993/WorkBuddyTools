@@ -1,0 +1,32 @@
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    ignore:
+      # Tauri 2.11.x still depends on gtk 0.18 on Linux, which requires
+      # glib ^0.18. Dependabot cannot move this transitive dependency to
+      # glib 0.20 until Tauri's upstream Linux stack moves off gtk 0.18.
+      - dependency-name: glib
+        versions:
+          - ">= 0.20.0"
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-dependencies:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
