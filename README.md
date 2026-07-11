@@ -1,47 +1,122 @@
 # WorkBuddy 模型配置工具
 
-一个基于 Tauri 2 + Rust + React 的桌面工具，用来维护 WorkBuddy 的第三方 OpenAI 兼容模型配置。
+![version](https://img.shields.io/badge/version-0.2.2-blue)
+![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB)
+![Rust](https://img.shields.io/badge/Rust-2021-000000)
+![React](https://img.shields.io/badge/React-18-61DAFB)
 
-工具会读取 WorkBuddy 的模型配置文件，管理自定义供应商，从供应商接口拉取可用模型，并把选中的模型写入 WorkBuddy。
+WorkBuddy 模型配置工具是一个 Tauri 2 + Rust + React 桌面应用，用来维护 WorkBuddy 的第三方 OpenAI 兼容模型配置。
 
-## 功能
+它面向已经在使用 WorkBuddy、并且需要接入自定义模型供应商的用户。你可以在一个独立工具里保存供应商、拉取模型、检查模型能力，并把选中的模型写入 WorkBuddy 的 `models.json`。
 
-- 显示 WorkBuddy 已配置模型列表。
-- 管理第三方模型供应商。
-- 支持 OpenAI 兼容接口。
-- 通过供应商 `/v1/models` 拉取模型列表。
-- 自动推断模型能力：
-  - `supportsToolCall`
-  - `supportsImages`
-  - `supportsReasoning`
-  - `useCustomProtocol`
-- 自动填充 token 上限：
-  - `maxInputTokens`
-  - `maxOutputTokens`
-- 将选中的模型写入 WorkBuddy 配置。
-- 从模型列表删除已配置模型。
-- 写入 `models.json` 前自动创建备份。
-- 使用带齿轮角标的 WorkBuddy 图标。
+## Design stance
 
-## 配置文件
+这个工具只做一件事：把第三方 OpenAI 兼容模型，稳定地写进 WorkBuddy 能识别的配置里。
 
-WorkBuddy 模型配置：
+它不会替代 WorkBuddy，也不会尝试成为通用模型管理平台。它的重点是减少手工编辑 JSON 的风险：路径固定、写入规则明确、更新前备份、模型能力和 token 上限尽量自动补齐。
+
+## Core idea
+
+WorkBuddy 的模型配置在本机文件中：
 
 ```text
 C:\Users\PC\.workbuddy\models.json
 ```
 
-本工具维护的供应商配置：
+默认配置目录是 `%USERPROFILE%\.workbuddy`，常见示例为 `C:\Users\PC\.workbuddy`。如果设置了 `WORKBUDDY_HOME`，工具会改用该环境变量指定的目录。
+
+本工具额外维护供应商配置：
 
 ```text
 C:\Users\PC\.workbuddy\model-providers.json
 ```
 
-供应商配置与 WorkBuddy 的 `models.json` 放在同一目录，但不会混写到 WorkBuddy 原配置里。
+两类配置放在同一个 `.workbuddy` 目录下，但用途不同：
 
-## 写入规则
+- `models.json` 是 WorkBuddy 读取的模型列表。
+- `model-providers.json` 是本工具保存的供应商列表和 API Key。
 
-添加模型到 WorkBuddy 时，生成的模型配置格式如下：
+添加模型时，工具会从供应商的 `/v1/models` 拉取模型 ID，然后写入 WorkBuddy 所需的 `Custom` 模型配置。
+
+## Where it fits
+
+适合这些场景：
+
+- 你想给 WorkBuddy 添加第三方 OpenAI 兼容模型。
+- 你不想手工维护 `models.json`。
+- 你有多个供应商，需要保存并切换 API 地址和 API Key。
+- 你希望从供应商接口拉取模型列表，而不是手动复制模型 ID。
+- 你希望写入前自动备份 WorkBuddy 配置。
+
+## Where it does not fit
+
+不适合这些场景：
+
+- 供应商不是 OpenAI 兼容接口。
+- 你需要管理非 WorkBuddy 的模型配置。
+- 你需要云端同步、团队共享或远程配置下发。
+- 你需要安装包下载页或自动更新机制。当前 README 不提供这些信息。
+
+## Core features
+
+### WorkBuddy 模型管理
+
+- 读取并展示 WorkBuddy 已配置模型。
+- 添加新的第三方模型到 `models.json`。
+- 模型 ID 已存在时更新原配置。
+- 从 WorkBuddy 模型列表删除不需要的模型。
+- 写入、更新或删除前备份 `models.json`。
+
+备份文件示例：
+
+```text
+models.json.20260629T120000Z.bak
+```
+
+### 供应商管理
+
+- 维护第三方模型供应商配置。
+- 保存供应商名称、API 请求地址和 API Key。
+- 从供应商 `/v1/models` 拉取可用模型。
+- 将供应商配置写入 `model-providers.json`，不混写到 WorkBuddy 原始模型配置中。
+
+### 自动推断模型能力
+
+工具会根据供应商返回信息和模型 ID，尽量补齐这些字段：
+
+- `supportsToolCall`
+- `supportsImages`
+- `supportsReasoning`
+- `useCustomProtocol`
+
+这些字段用于让 WorkBuddy 了解模型是否支持工具调用、图片输入、推理能力或自定义协议。
+
+### 自动补齐 token 上限
+
+很多 OpenAI 兼容供应商的 `/v1/models` 只返回模型 ID，不返回上下文长度或最大输出 token。
+
+工具使用两级策略：
+
+1. 优先读取供应商返回字段，例如 `maxInputTokens`、`contextLength`、`maxOutputTokens`、`maxCompletionTokens` 等。
+2. 如果供应商没有返回，则使用内置模型数据库按模型 ID 匹配补齐。
+
+内置匹配顺序：
+
+- 精确匹配。
+- 去掉 `provider/model` 前缀后匹配。
+- 最长前缀匹配。
+- 最长包含匹配。
+
+例如 `deepseek-ai/DeepSeek-V4-Pro` 可以补齐：
+
+```text
+maxInputTokens = 1048576
+maxOutputTokens = 384000
+```
+
+## 写入格式
+
+添加模型到 WorkBuddy 时，生成的配置类似：
 
 ```json
 {
@@ -59,68 +134,20 @@ C:\Users\PC\.workbuddy\model-providers.json
 }
 ```
 
-规则：
+写入规则：
 
 - `id` 使用供应商返回的原始模型 ID。
 - `name` 使用 `${供应商名称}-${模型ID}`。
 - `vendor` 固定为 `Custom`。
 - `url` 自动规范化为 `/v1/chat/completions`。
-- 如果模型 ID 已存在，则更新该条模型配置。
+- 如果模型 ID 已存在，则更新该条配置。
 - 如果模型 ID 不存在，则追加到 `models.json`。
-- 添加、更新或删除模型前会备份原文件，例如：
 
-```text
-models.json.20260629T120000Z.bak
-```
+## Installation
 
-## Token 上限来源
+当前项目尚未提供 Release 下载地址或安装包说明。
 
-很多 OpenAI 兼容供应商的 `/v1/models` 只返回模型 ID，不返回上下文长度或最大输出。
-
-本工具使用两级策略：
-
-1. 优先读取供应商 `/v1/models` 返回的字段，例如：
-   - `maxInputTokens`
-   - `max_input_tokens`
-   - `contextLength`
-   - `context_length`
-   - `maxOutputTokens`
-   - `max_output_tokens`
-   - `maxCompletionTokens`
-   - `max_completion_tokens`
-2. 如果供应商没有返回，则使用内置模型数据库按模型 ID 匹配补齐。
-
-内置数据库来自 Kivio 同类实现思路，匹配顺序为：
-
-- 精确匹配。
-- 去掉 `provider/model` 前缀后匹配。
-- 最长前缀匹配。
-- 最长包含匹配。
-
-例如 `deepseek-ai/DeepSeek-V4-Pro` 可以补齐：
-
-```text
-maxInputTokens = 1048576
-maxOutputTokens = 384000
-```
-
-## 使用方式
-
-1. 打开工具。
-2. 切换到“供应商”Tab。
-3. 填写供应商名称、API 请求地址、API Key。
-4. 点击“添加供应商”。
-5. 选择供应商并点击“拉取模型”。
-6. 勾选要添加到 WorkBuddy 的模型。
-7. 点击“添加到 WorkBuddy”。
-8. 切换到“模型列表”查看写入结果。
-9. 在“模型列表”中点击删除按钮可移除不需要的模型。
-
-WorkBuddy 不需要重启即可读取新的模型配置。
-
-## 开发运行
-
-前置环境：
+如果你从源码运行，需要准备：
 
 - Node.js
 - npm
@@ -133,50 +160,53 @@ WorkBuddy 不需要重启即可读取新的模型配置。
 npm install
 ```
 
-开发模式：
+## Quick start
 
-```powershell
-npm run tauri dev
-```
+1. 启动开发版应用：
 
-前端构建：
+   ```powershell
+   npm run tauri dev
+   ```
 
-```powershell
-npm run build
-```
+2. 打开 **供应商** 页面。
+3. 填写供应商名称、API 请求地址和 API Key。
+4. 点击 **添加供应商**。
+5. 选择供应商并点击 **拉取模型**。
+6. 勾选要添加到 WorkBuddy 的模型。
+7. 点击 **添加到 WorkBuddy**。
+8. 切换到 **模型列表** 查看写入结果。
+9. 在 **模型列表** 中删除不再需要的模型。
 
-Rust 检查：
+WorkBuddy 通常可以直接读取更新后的模型配置；如果界面没有刷新，重新打开 WorkBuddy 再确认。
 
-```powershell
-cargo check --manifest-path src-tauri/Cargo.toml
-```
+## Compatibility
 
-Rust 测试：
-
-```powershell
-cargo test --manifest-path src-tauri/Cargo.toml --lib
-```
-
-## 构建可执行文件
-
-构建 release exe：
-
-```powershell
-npm run tauri build -- --no-bundle
-```
-
-输出文件：
+当前工具面向 Windows 上的 WorkBuddy 配置目录，默认目录是 `%USERPROFILE%\.workbuddy`：
 
 ```text
-D:\WorkSpace\personal\WorkBuddyTools\src-tauri\target\release\workbuddy-model-config.exe
+C:\Users\PC\.workbuddy\
 ```
 
-说明：
+如果设置了 `WORKBUDDY_HOME`，工具会使用该环境变量指定的目录。
 
-- `--no-bundle` 会生成可执行文件，不生成安装包。
-- MSI 安装包依赖本机 WiX 工具链，当前项目主要验证 release exe。
+模型供应商需要提供 OpenAI 兼容接口，至少应支持：
 
-## 项目结构
+```text
+GET /v1/models
+POST /v1/chat/completions
+```
+
+非 OpenAI 兼容供应商暂不处理。
+
+## Tech stack
+
+- Tauri 2：桌面应用外壳。
+- Rust：本地文件读写、备份、供应商请求、模型写入逻辑。
+- React 18：前端界面。
+- TypeScript：前端类型检查。
+- Vite：前端开发和构建。
+
+项目结构：
 
 ```text
 .
@@ -190,7 +220,32 @@ D:\WorkSpace\personal\WorkBuddyTools\src-tauri\target\release\workbuddy-model-co
 └── README.md
 ```
 
-## 验证命令
+## Development
+
+常用命令：
+
+```powershell
+npm run tauri dev
+npm run build
+npm run typecheck
+npm run tauri build -- --no-bundle
+```
+
+测试命令：
+
+```powershell
+npm run test:layout
+npm run test:provider-workflow
+npm run test:runtime
+npm run test:theme
+```
+
+Rust 检查和测试：
+
+```powershell
+cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+```
 
 提交或发布前建议执行：
 
@@ -203,9 +258,17 @@ npm run build
 npm run tauri build -- --no-bundle
 ```
 
-## 注意事项
+构建 release 可执行文件：
 
-- API Key 会保存在 `model-providers.json` 中，请注意本机文件权限。
-- `models.json` 写入前会自动备份，但仍建议在大批量添加模型前确认当前配置可用。
-- 模型能力和 token 上限可能来自内置数据库匹配，供应商真实限制变化时需要更新 `modelDatabase.json`。
-- 仅支持 OpenAI 兼容接口；非 OpenAI 兼容供应商暂不处理。
+```powershell
+npm run tauri build -- --no-bundle
+```
+
+`--no-bundle` 会生成可执行文件，不生成安装包。
+
+## Privacy and notes
+
+- API Key 会保存在本机 `model-providers.json` 中，请注意本机文件权限。
+- 写入 `models.json` 前会自动备份，但批量添加模型前仍建议确认当前配置可用。
+- 模型能力和 token 上限可能来自内置数据库匹配。供应商真实限制变化时，需要更新 `src-tauri/resources/modelDatabase.json`。
+- 本工具只维护 WorkBuddy 的本机模型配置，不提供云端同步。
