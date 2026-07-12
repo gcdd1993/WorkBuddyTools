@@ -1,3 +1,9 @@
+pub mod crypto;
+pub mod settings;
+pub mod sessions;
+pub mod sync;
+pub mod webdav;
+
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -379,14 +385,7 @@ fn backup_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn workbuddy_dir() -> Result<PathBuf, String> {
-    if let Ok(value) = env::var("WORKBUDDY_HOME") {
-        let path = PathBuf::from(value);
-        if !path.as_os_str().is_empty() {
-            return Ok(path);
-        }
-    }
-
+pub(crate) fn workbuddy_dir() -> Result<PathBuf, String> {
     let user_profile =
         env::var("USERPROFILE").map_err(|_| "无法读取 USERPROFILE 环境变量".to_string())?;
     Ok(PathBuf::from(user_profile).join(".workbuddy"))
@@ -816,7 +815,16 @@ pub fn run() {
             save_provider,
             delete_provider,
             fetch_provider_models,
-            add_models_to_workbuddy
+            add_models_to_workbuddy,
+            settings::load_app_settings,
+            settings::save_app_settings,
+            sessions::list_workbuddy_sessions,
+            sessions::delete_workbuddy_session,
+            webdav::webdav_test_connection,
+            webdav::webdav_fetch_remote_info,
+            webdav::webdav_upload_sync,
+            webdav::webdav_download_sync,
+            webdav::webdav_run_sync
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

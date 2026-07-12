@@ -10,7 +10,7 @@ export function isTauriRuntime(globalObject: unknown = globalThis): boolean {
   return Boolean(candidate.__TAURI__ || candidate.__TAURI_INTERNALS__);
 }
 
-export function getBrowserPreviewResult(command: string): unknown {
+export function getBrowserPreviewResult(command: string, args?: Record<string, unknown>): unknown {
   switch (command) {
     case "get_paths":
       return {
@@ -20,7 +20,23 @@ export function getBrowserPreviewResult(command: string): unknown {
       };
     case "load_workbuddy_models":
     case "load_providers":
+    case "list_workbuddy_sessions":
       return [];
+    case "webdav_fetch_remote_info":
+      return null;
+    case "load_app_settings":
+      return {
+        webdav: { baseUrl: "", username: "", password: "", remoteRoot: "WorkBuddySync", passphrase: "" },
+      };
+    case "save_app_settings":
+      return args?.settings;
+    case "webdav_test_connection":
+    case "webdav_upload_sync":
+    case "webdav_download_sync":
+    case "webdav_run_sync":
+      throw new Error("WebDAV 同步需要在 Tauri 桌面应用中运行。");
+    case "delete_workbuddy_session":
+      throw new Error("会话管理需要在 Tauri 桌面应用中运行。");
     default:
       throw new Error("此操作需要在 Tauri 桌面应用中运行。");
   }
@@ -31,7 +47,7 @@ export async function invokeCommand<T>(
   args?: Record<string, unknown>,
 ): Promise<T> {
   if (!isTauriRuntime()) {
-    return getBrowserPreviewResult(command) as T;
+    return getBrowserPreviewResult(command, args) as T;
   }
   return invoke<T>(command, args);
 }

@@ -1,12 +1,18 @@
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  ArrowLeft,
   Check,
+  CircleAlert,
+  Cloud,
   Database,
+  Download,
   Eye,
   EyeOff,
   KeyRound,
+  Settings,
   Loader2,
+  MessageSquare,
   Moon,
   Pencil,
   Plus,
@@ -14,6 +20,7 @@ import {
   Server,
   Sun,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import {
@@ -33,7 +40,56 @@ import {
 } from "./providerWorkflow";
 import "./styles.css";
 
-type TabKey = "models" | "providers";
+type TabKey = "models" | "providers" | "sessions";
+
+type WorkBuddySessionSummary = {
+  id: string;
+  title: string;
+  cwd: string;
+  status: string;
+  model: string;
+  createdAt: number | null;
+  updatedAt: number | null;
+  lastActivityAt: number | null;
+  sizeBytes: number;
+};
+
+type DeleteSessionResult = {
+  message?: string;
+};
+
+type SyncStrategy = "smartMerge" | "remoteOverwriteLocal" | "localOverwriteRemote";
+
+type WebDavSyncSettings = {
+  baseUrl: string;
+  username: string;
+  password: string;
+  remoteRoot: string;
+  passphrase: string;
+};
+
+type AppSettings = {
+  webdav: WebDavSyncSettings;
+};
+
+type WebDavRemoteInfo = {
+  generation: string;
+  createdAt: string;
+  deviceName: string;
+  encryptedPackagePath: string;
+  encryptedPackageSha256: string;
+  encryptedPackageSize: number;
+};
+
+type WebDavSyncResult = {
+  status: string;
+  strategy: SyncStrategy;
+  generation?: string | null;
+  remotePath?: string | null;
+  backupDir?: string | null;
+  conflicts: string[];
+  message: string;
+};
 
 type WorkBuddyModel = {
   id?: string;
@@ -99,6 +155,10 @@ type ProviderForm = ProviderFormValue;
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabKey>("models");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
+  const [settingsDraft, setSettingsDraft] = useState<AppSettings | null>(null);
+  const [savingSettings, setSavingSettings] = useState(false);
   const [theme, setTheme] = useState<ThemeMode>(() =>
     resolveAppTheme(),
   );
@@ -117,11 +177,64 @@ function App() {
   const [deletingModelId, setDeletingModelId] = useState<string>("");
   const [message, setMessage] = useState<string>("");
   const [error, setError] = useState<string>("");
+  const [syncSettings, setSyncSettings] = useState<WebDavSyncSettings>({
+    baseUrl: "", username: "", password: "", remoteRoot: "WorkBuddySync",
+    passphrase: "",
+  });
+  const [syncStrategy, setSyncStrategy] = useState<SyncStrategy>("smartMerge");
+  const [syncLoading, setSyncLoading] = useState("");
+  const [remoteInfo, setRemoteInfo] = useState<WebDavRemoteInfo | null>(null);
+  const [syncResult, setSyncResult] = useState<WebDavSyncResult | null>(null);
+  const [sessions, setSessions] = useState<WorkBuddySessionSummary[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [deletingSessionId, setDeletingSessionId] = useState("");
   const lastAutoFetchedProviderId = useRef("");
 
   useEffect(() => {
-    void refreshAll();
+    void initializeApp();
   }, []);
+
+  async function initializeApp() {
+    try {
+      const saved = await invokeCommand<AppSettings>("load_app_settings");
+      setAppSettings(saved);
+      setSettingsDraft(saved);
+      setSyncSettings(saved.webdav);
+    } catch (err) {
+      setError(toErrorMessage(err));
+    }
+    await refreshAll();
+  }
+
+  function openSettings() {
+    if (appSettings) setSettingsDraft(structuredClone(appSettings));
+    setSettingsOpen(true);
+  }
+
+  function closeSettings() {
+    if (appSettings) setSettingsDraft(structuredClone(appSettings));
+    setSettingsOpen(false);
+  }
+
+  async function saveSettings(event: FormEvent) {
+    event.preventDefault();
+    if (!settingsDraft) return;
+    setSavingSettings(true);
+    setError("");
+    try {
+      const saved = await invokeCommand<AppSettings>("save_app_settings", { settings: settingsDraft });
+      setAppSettings(saved);
+      setSettingsDraft(structuredClone(saved));
+      setSyncSettings(saved.webdav);
+      setRemoteInfo(null);
+      setSyncResult(null);
+      setMessage("设置已保存");
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setSavingSettings(false);
+    }
+  }
 
   useEffect(() => {
     applyThemeToDocument(theme);
@@ -153,6 +266,12 @@ function App() {
   }, [providers, selectedProviderId]);
 
   useEffect(() => {
+    if (activeTab === "sessions" && sessions.length === 0) {
+      void refreshSessions();
+    }
+  }, [activeTab]);
+
+  useEffect(() => {
     if (
       shouldAutoFetchProviderModels({
         activeTab,
@@ -172,6 +291,34 @@ function App() {
   const configuredIds = useMemo(() => {
     return new Set(models.map((model) => model.id).filter(Boolean) as string[]);
   }, [models]);
+
+  async function refreshSessions() {
+    setSessionsLoading(true);
+    setError("");
+    try {
+      setSessions(await invokeCommand<WorkBuddySessionSummary[]>("list_workbuddy_sessions"));
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setSessionsLoading(false);
+    }
+  }
+
+  async function handleDeleteSession(session: WorkBuddySessionSummary) {
+    if (session.status.toLowerCase() === "working") return;
+    if (!window.confirm(`确定将会话“${session.title || session.id}”移入回收站吗？`)) return;
+    setDeletingSessionId(session.id);
+    setError("");
+    try {
+      const result = await invokeCommand<DeleteSessionResult>("delete_workbuddy_session", { sessionId: session.id });
+      setMessage(result.message || "会话已移入回收站");
+      await refreshSessions();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setDeletingSessionId("");
+    }
+  }
 
   async function refreshAll() {
     setLoading(true);
@@ -413,6 +560,35 @@ function App() {
     setSelectedModelIds(new Set());
   }
 
+  async function runWebDavAction(command: string, strategy?: SyncStrategy) {
+    setSyncLoading(command);
+    setError("");
+    setMessage("");
+    try {
+      if (command === "webdav_test_connection") {
+        await invokeCommand(command, { settings: syncSettings });
+        setMessage("WebDAV 连接成功");
+      } else if (command === "webdav_fetch_remote_info") {
+        const info = await invokeCommand<WebDavRemoteInfo | null>(command, { settings: syncSettings });
+        setRemoteInfo(info);
+        setMessage(info ? "已读取远端同步信息" : "远端暂无同步包");
+      } else {
+        const result = await invokeCommand<WebDavSyncResult>(command, {
+          settings: syncSettings,
+          strategy: strategy ?? syncStrategy,
+        });
+        setSyncResult(result);
+        setMessage(result.message);
+        const info = await invokeCommand<WebDavRemoteInfo | null>("webdav_fetch_remote_info", { settings: syncSettings });
+        setRemoteInfo(info);
+      }
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setSyncLoading("");
+    }
+  }
+
   return (
     <main className="app-shell">
       <div className="toast-region" aria-live="polite" aria-atomic="true">
@@ -437,6 +613,9 @@ function App() {
             <span>{providers.length}</span>
             <small>供应商</small>
           </div>
+          <button className="icon-button" type="button" onClick={openSettings} title="应用设置" aria-label="打开应用设置">
+            <Settings size={18} />
+          </button>
           <button
             className="icon-button theme-toggle"
             type="button"
@@ -459,6 +638,22 @@ function App() {
         </div>
       </header>
 
+      {settingsOpen ? (
+        <SettingsPage
+          settings={settingsDraft}
+          savedSettings={appSettings}
+          saving={savingSettings}
+          strategy={syncStrategy}
+          syncLoading={syncLoading}
+          remoteInfo={remoteInfo}
+          syncResult={syncResult}
+          onChange={setSettingsDraft}
+          onCancel={closeSettings}
+          onSave={saveSettings}
+          onStrategyChange={setSyncStrategy}
+          onSyncAction={runWebDavAction}
+        />
+      ) : <>
       <nav className="tabs" aria-label="配置视图" role="tablist">
         <button
           className={activeTab === "models" ? "active" : ""}
@@ -482,6 +677,17 @@ function App() {
           <span>供应商</span>
           <span className="tab-count">{providers.length}</span>
         </button>
+        <button
+          className={activeTab === "sessions" ? "active" : ""}
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "sessions"}
+          onClick={() => setActiveTab("sessions")}
+        >
+          <MessageSquare size={16} />
+          <span>会话管理</span>
+          <span className="tab-count">{sessions.length}</span>
+        </button>
       </nav>
 
       {activeTab === "models" ? (
@@ -492,7 +698,7 @@ function App() {
           loading={loading}
           deletingModelId={deletingModelId}
         />
-      ) : (
+      ) : activeTab === "providers" ? (
         <ProvidersTab
           providers={providers}
           selectedProvider={selectedProvider}
@@ -519,9 +725,203 @@ function App() {
           onClearSelection={clearFetchedModelSelection}
           onAddModels={handleAddModels}
         />
+      ) : (
+        <SessionsTab
+          sessions={sessions}
+          loading={sessionsLoading}
+          deletingSessionId={deletingSessionId}
+          onRefresh={refreshSessions}
+          onDelete={handleDeleteSession}
+        />
       )}
+      </>}
     </main>
   );
+}
+
+function SettingsPage({ settings, savedSettings, saving, strategy, syncLoading, remoteInfo, syncResult, onChange, onCancel, onSave, onStrategyChange, onSyncAction }: {
+  settings: AppSettings | null; savedSettings: AppSettings | null; saving: boolean;
+  strategy: SyncStrategy; syncLoading: string; remoteInfo: WebDavRemoteInfo | null; syncResult: WebDavSyncResult | null;
+  onChange: (settings: AppSettings) => void;
+  onCancel: () => void; onSave: (event: FormEvent) => void;
+  onStrategyChange: (strategy: SyncStrategy) => void;
+  onSyncAction: (command: string, strategy?: SyncStrategy) => void;
+}) {
+  if (!settings) return <section className="panel settings-page"><EmptyState label="正在读取应用设置..." /></section>;
+  const updateWebDav = (field: keyof WebDavSyncSettings, value: string) => onChange({ ...settings, webdav: { ...settings.webdav, [field]: value } });
+  return (
+    <section className="panel settings-page" aria-labelledby="settings-title">
+      <div className="panel-header settings-header"><button className="icon-button" type="button" onClick={onCancel} aria-label="返回主界面" title="返回主界面"><ArrowLeft size={18} /></button><div><h2 id="settings-title">应用设置</h2><p>配置 WebDAV 连接与同步</p></div></div>
+      <form className="settings-form" onSubmit={onSave}>
+        <div className="settings-section">
+          <div className="settings-section-heading"><h3>本地存储</h3><p>本程序设置固定保存到 %USERPROFILE%\.workbuddy\workbuddy-tools\settings.json；WorkBuddy 数据固定读取 %USERPROFILE%\.workbuddy。</p></div>
+        </div>
+        <div className="settings-section">
+          <div className="settings-section-heading"><h3>WebDAV 与同步</h3><p>配置远端连接，并在此备份或恢复会话与模型配置。</p></div>
+          <div className="settings-grid">
+            <label><span className="field-label">WebDAV 地址</span><input value={settings.webdav.baseUrl} onChange={(e) => updateWebDav("baseUrl", e.target.value)} placeholder="https://dav.jianguoyun.com/dav/" /></label>
+            <label><span className="field-label">用户名</span><input value={settings.webdav.username} onChange={(e) => updateWebDav("username", e.target.value)} /></label>
+            <label><span className="field-label">密码 / Token</span><input type="password" value={settings.webdav.password} onChange={(e) => updateWebDav("password", e.target.value)} /></label>
+            <label><span className="field-label">远端目录</span><input value={settings.webdav.remoteRoot} onChange={(e) => updateWebDav("remoteRoot", e.target.value)} /></label>
+            <label><span className="field-label">同步加密密码（选填）</span><input type="password" value={settings.webdav.passphrase} onChange={(e) => updateWebDav("passphrase", e.target.value)} /></label>
+          </div>
+          <div className="settings-note danger-note"><CircleAlert size={17} /><span>WebDAV 密码和同步加密密码会以明文保存到本机 settings.json，请确保当前 Windows 账户和设置文件安全。</span></div>
+          <SyncSettingsSection
+            settings={savedSettings?.webdav ?? settings.webdav}
+            strategy={strategy}
+            loading={syncLoading}
+            saving={saving}
+            remoteInfo={remoteInfo}
+            result={syncResult}
+            hasUnsavedChanges={!savedSettings || JSON.stringify(settings) !== JSON.stringify(savedSettings)}
+            onCancel={onCancel}
+            onStrategyChange={onStrategyChange}
+            onAction={onSyncAction}
+          />
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function SessionsTab({ sessions, loading, deletingSessionId, onRefresh, onDelete }: {
+  sessions: WorkBuddySessionSummary[];
+  loading: boolean;
+  deletingSessionId: string;
+  onRefresh: () => void;
+  onDelete: (session: WorkBuddySessionSummary) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleSessions = sessions.filter((session) =>
+    !normalizedQuery || session.title.toLowerCase().includes(normalizedQuery) || session.cwd.toLowerCase().includes(normalizedQuery),
+  );
+
+  return (
+    <section className="panel sessions-panel" aria-labelledby="sessions-title">
+      <div className="panel-header">
+        <div className="session-heading"><h2 id="sessions-title">本机会话管理</h2><p>共 {sessions.length} 个会话，可按标题或工作目录搜索</p></div>
+        <div className="session-toolbar">
+          <button
+            className="icon-button session-refresh-button"
+            type="button"
+            onClick={onRefresh}
+            disabled={loading}
+            title="刷新会话列表"
+            aria-label="刷新会话列表"
+          >
+            {loading ? <Loader2 className="spin" size={18} /> : <RefreshCcw size={18} />}
+          </button>
+          <input
+            id="session-search"
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="输入标题或工作目录"
+            aria-label="搜索会话"
+          />
+          <span>{visibleSessions.length} / {sessions.length}</span>
+        </div>
+      </div>
+      {visibleSessions.length ? (
+        <div className="session-list">
+          {visibleSessions.map((session) => {
+            const working = session.status.toLowerCase() === "working";
+            const deleting = deletingSessionId === session.id;
+            return (
+              <article className="session-card" key={session.id}>
+                <div className="session-card-main">
+                  <div className="session-title-row">
+                    <h3>{session.title || "未命名会话"}</h3>
+                    <span className={`session-status${working ? " working" : ""}`}>{session.status || "unknown"}</span>
+                  </div>
+                  <p className="session-cwd" title={session.cwd}>{session.cwd || "无工作目录"}</p>
+                  <dl className="session-details">
+                    <div><dt>模型</dt><dd>{session.model || "未知"}</dd></div>
+                    <div><dt>最后活动</dt><dd>{formatSessionTime(session.lastActivityAt || session.updatedAt)}</dd></div>
+                    <div><dt>创建时间</dt><dd>{formatSessionTime(session.createdAt)}</dd></div>
+                    <div><dt>文件大小</dt><dd>{formatBytes(session.sizeBytes)}</dd></div>
+                  </dl>
+                </div>
+                <div className="session-card-actions">
+                  <button className="danger-button" type="button" disabled={working || Boolean(deletingSessionId)} onClick={() => onDelete(session)} title={working ? "正在运行的会话不能删除" : "移入会话回收站"}>
+                    {deleting ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}{working ? "运行中" : "删除"}
+                  </button>
+                  {working ? <small>正在运行，无法删除</small> : null}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : <EmptyState label={loading ? "正在读取本机会话..." : normalizedQuery ? "没有匹配的会话" : "暂无本机会话"} />}
+    </section>
+  );
+}
+
+function formatSessionTime(value: number | null) {
+  if (value === null) return "未知";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "未知";
+  return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function SyncSettingsSection({ settings, strategy, loading, saving, remoteInfo, result, hasUnsavedChanges, onCancel, onStrategyChange, onAction }: {
+  settings: WebDavSyncSettings;
+  strategy: SyncStrategy;
+  loading: string;
+  saving: boolean;
+  remoteInfo: WebDavRemoteInfo | null;
+  result: WebDavSyncResult | null;
+  hasUnsavedChanges: boolean;
+  onCancel: () => void;
+  onStrategyChange: (strategy: SyncStrategy) => void;
+  onAction: (command: string, strategy?: SyncStrategy) => void;
+}) {
+  const busy = loading.length > 0;
+  const configured = Boolean(settings.baseUrl.trim() && settings.username.trim() && settings.password.trim());
+  return (
+    <div className="settings-sync" aria-labelledby="sync-title">
+      <div className="settings-section-heading"><h3 id="sync-title">同步操作</h3><p>将会话与模型配置打包后同步到 WebDAV。</p></div>
+      <div className="sync-content">
+        <div className="sync-card">
+          {!configured ? <div className="sync-unconfigured"><CircleAlert size={20} /><div><strong>尚未配置 WebDAV</strong><p>请先填写并保存 WebDAV 地址、用户名和密码，再执行同步操作。</p></div></div> : null}
+          {hasUnsavedChanges ? <div className="settings-note"><CircleAlert size={17} /><span>设置存在未保存的更改。同步操作只使用已保存的配置，请先保存设置。</span></div> : null}
+          <div className="provider-form sync-options">
+            <label><span className="field-label">同步策略</span><select value={strategy} onChange={(e) => onStrategyChange(e.target.value as SyncStrategy)}><option value="smartMerge">智能合并</option><option value="remoteOverwriteLocal">远端覆盖本机</option><option value="localOverwriteRemote">本机覆盖远端</option></select></label>
+          </div>
+          <div className={`warning-box${settings.passphrase.trim() ? "" : " warning-box-danger"}`}>同步包包含会话、models.json 与 model-providers.json（可能包含 API Key）。填写同步加密密码时上传为 workbuddy-sync.zip.enc；留空时将以明文 workbuddy-sync.zip 上传，会话、模型配置及 API Key 将以明文存储在 WebDAV，存在安全风险。</div>
+          <div className="sync-actions">
+            <button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>取消</button>
+            <button type="submit" className="primary-button" disabled={saving}>保存</button>
+            <button type="button" className="secondary-button" disabled={busy || !configured || hasUnsavedChanges} onClick={() => onAction("webdav_test_connection")}>{loading === "webdav_test_connection" ? <Loader2 className="spin" size={16} /> : <Cloud size={16} />}测试连接</button>
+            <button type="button" className="secondary-button" disabled={busy || !configured || hasUnsavedChanges} onClick={() => onAction("webdav_fetch_remote_info")}><RefreshCcw size={16} />查看远端</button>
+            <button type="button" className="primary-button" disabled={busy || !configured || hasUnsavedChanges} onClick={() => onAction("webdav_run_sync")}>{loading === "webdav_run_sync" ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}执行同步</button>
+            <button type="button" className="secondary-button" disabled={busy || !configured || hasUnsavedChanges} onClick={() => onAction("webdav_upload_sync", "localOverwriteRemote")}><Upload size={16} />上传本机覆盖远端</button>
+            <button type="button" className="secondary-button" disabled={busy || !configured || hasUnsavedChanges} onClick={() => onAction("webdav_download_sync", "remoteOverwriteLocal")}><Download size={16} />下载远端覆盖本机</button>
+          </div>
+        </div>
+        {remoteInfo ? <div className="result-card"><h3>远端同步包</h3><dl className="detail-list"><dt>代次</dt><dd>{remoteInfo.generation}</dd><dt>创建时间</dt><dd>{remoteInfo.createdAt}</dd><dt>设备</dt><dd>{remoteInfo.deviceName}</dd><dt>大小</dt><dd>{formatBytes(remoteInfo.encryptedPackageSize)}</dd><dt>路径</dt><dd className="mono">{remoteInfo.encryptedPackagePath}</dd><dt>SHA-256</dt><dd className="mono">{remoteInfo.encryptedPackageSha256}</dd></dl></div> : null}
+        {result ? <div className="result-card"><h3>最近同步结果</h3><p>{result.message}</p><dl className="detail-list">{result.generation ? <><dt>代次</dt><dd>{result.generation}</dd></> : null}{result.remotePath ? <><dt>远端路径</dt><dd className="mono">{result.remotePath}</dd></> : null}{result.backupDir ? <><dt>本机备份</dt><dd className="mono">{result.backupDir}</dd></> : null}</dl>{result.conflicts.length ? <div className="conflict-list"><strong>冲突文件</strong>{result.conflicts.map((path) => <div className="mono" key={path}>{path}</div>)}</div> : null}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function InfoTooltip({ id, children }: { id: string; children: React.ReactNode }) {
+  return (
+    <span className="info-tooltip">
+      <button className="info-tooltip-trigger" type="button" aria-label="查看说明" aria-describedby={id}>
+        <CircleAlert aria-hidden="true" size={15} />
+      </button>
+      <span className="info-tooltip-content" id={id} role="tooltip">{children}</span>
+    </span>
+  );
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function ModelsTab({

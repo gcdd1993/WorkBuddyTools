@@ -1,4 +1,4 @@
-export type ProviderWorkflowTab = "models" | "providers";
+export type ProviderWorkflowTab = "models" | "providers" | "sessions";
 
 export type ProviderFormValue = {
   id?: string;
