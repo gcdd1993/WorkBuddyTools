@@ -13,4 +13,4 @@ src-tauri/target/
 docs/*
 !docs/screenshots/
 docs/screenshots/*
-!docs/screenshots/*.svg
+!docs/screenshots/*.png

@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::{env, fs, path::{Path, PathBuf}};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 const APP_CONFIG_DIR: &str = "com.workbuddytools.modelconfig";
 const WORKBUDDY_TOOLS_DIR: &str = "workbuddy-tools";
@@ -63,8 +66,12 @@ pub fn read_app_settings() -> Result<AppSettings, String> {
     }
     let content = fs::read_to_string(&path)
         .map_err(|err| format!("读取应用设置 {} 失败：{err}", path.display()))?;
-    serde_json::from_str(&content)
-        .map_err(|err| format!("解析应用设置 {} 失败：{err}。原文件未被修改", path.display()))
+    serde_json::from_str(&content).map_err(|err| {
+        format!(
+            "解析应用设置 {} 失败：{err}。原文件未被修改",
+            path.display()
+        )
+    })
 }
 
 #[tauri::command]
@@ -81,7 +88,9 @@ pub fn save_app_settings(mut settings: AppSettings) -> Result<AppSettings, Strin
 }
 
 fn write_settings(path: &Path, settings: &AppSettings) -> Result<(), String> {
-    let parent = path.parent().ok_or_else(|| "应用设置路径无父目录".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "应用设置路径无父目录".to_string())?;
     fs::create_dir_all(parent)
         .map_err(|err| format!("创建应用设置目录 {} 失败：{err}", parent.display()))?;
 
@@ -108,19 +117,29 @@ fn migrate_legacy_settings(new_path: &Path) -> Result<(), String> {
     let Some(app_data) = env::var_os("APPDATA").filter(|value| !value.is_empty()) else {
         return Ok(());
     };
-    let legacy_path = PathBuf::from(app_data).join(APP_CONFIG_DIR).join(SETTINGS_FILE);
+    let legacy_path = PathBuf::from(app_data)
+        .join(APP_CONFIG_DIR)
+        .join(SETTINGS_FILE);
     if !legacy_path.exists() {
         return Ok(());
     }
 
     let content = fs::read_to_string(&legacy_path)
         .map_err(|err| format!("读取旧应用设置 {} 失败：{err}", legacy_path.display()))?;
-    let mut settings: AppSettings = serde_json::from_str(&content)
-        .map_err(|err| format!("解析旧应用设置 {} 失败：{err}。原文件未被修改", legacy_path.display()))?;
+    let mut settings: AppSettings = serde_json::from_str(&content).map_err(|err| {
+        format!(
+            "解析旧应用设置 {} 失败：{err}。原文件未被修改",
+            legacy_path.display()
+        )
+    })?;
     normalize_settings(&mut settings);
     write_settings(new_path, &settings)?;
-    fs::remove_file(&legacy_path)
-        .map_err(|err| format!("新设置已保存，但删除旧应用设置 {} 失败：{err}", legacy_path.display()))?;
+    fs::remove_file(&legacy_path).map_err(|err| {
+        format!(
+            "新设置已保存，但删除旧应用设置 {} 失败：{err}",
+            legacy_path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -144,7 +163,10 @@ fn replace_file(temp_path: &Path, target_path: &Path) -> Result<(), String> {
         }
         Err(err) => {
             let _ = fs::rename(&backup_path, target_path);
-            Err(format!("替换应用设置 {} 失败：{err}", target_path.display()))
+            Err(format!(
+                "替换应用设置 {} 失败：{err}",
+                target_path.display()
+            ))
         }
     }
 }

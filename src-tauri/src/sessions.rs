@@ -264,7 +264,9 @@ fn find_session_paths(root: &Path, id: &str) -> Result<Vec<PathBuf>, String> {
 
 fn path_size(path: &Path) -> u64 {
     if path.is_file() {
-        return fs::metadata(path).map(|metadata| metadata.len()).unwrap_or(0);
+        return fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
     }
     WalkDir::new(path)
         .follow_links(false)
@@ -339,7 +341,9 @@ fn remove_from_recent_index(root: &Path, session_id: &str) -> Result<(), String>
     let mut value: Value = serde_json::from_slice(&bytes)
         .map_err(|error| format!("解析 sessions.json 失败：{error}"))?;
     remove_conversation_id(&mut value, session_id);
-    let parent = path.parent().ok_or_else(|| "无效的 sessions.json 路径".to_string())?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| "无效的 sessions.json 路径".to_string())?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
         .map_err(|error| format!("创建 sessions.json 临时文件失败：{error}"))?;
     serde_json::to_writer_pretty(temporary.as_file_mut(), &value)

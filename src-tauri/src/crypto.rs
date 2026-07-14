@@ -29,8 +29,7 @@ pub fn encrypt_package(
     OsRng.fill_bytes(&mut nonce_bytes);
 
     let key = derive_key(passphrase, &salt);
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|err| format!("创建加密器失败：{err}"))?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|err| format!("创建加密器失败：{err}"))?;
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce_bytes), plain.as_ref())
         .map_err(|err| format!("加密 ZIP 包失败：{err}"))?;
@@ -71,8 +70,7 @@ pub fn decrypt_package(
     let ciphertext = &encrypted[cipher_start..];
 
     let key = derive_key(passphrase, salt);
-    let cipher = Aes256Gcm::new_from_slice(&key)
-        .map_err(|err| format!("创建解密器失败：{err}"))?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|err| format!("创建解密器失败：{err}"))?;
     let plain = cipher
         .decrypt(Nonce::from_slice(nonce), ciphertext)
         .map_err(|_| "解密 ZIP 包失败，请检查同步密码或远端文件是否损坏".to_string())?;
@@ -92,7 +90,10 @@ fn derive_key(passphrase: &str, salt: &[u8]) -> [u8; KEY_LEN] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     #[test]
     fn encrypted_package_round_trip_restores_plain_zip_bytes() {
@@ -114,8 +115,14 @@ mod tests {
         decrypt_package(&encrypted, &decrypted, "correct horse battery staple")
             .expect("decrypt package");
 
-        assert_ne!(fs::read(&encrypted).expect("read encrypted"), fs::read(&plain).expect("read plain"));
-        assert_eq!(fs::read(&decrypted).expect("read decrypted"), b"zip bytes with apiKey-like secret sk-test");
+        assert_ne!(
+            fs::read(&encrypted).expect("read encrypted"),
+            fs::read(&plain).expect("read plain")
+        );
+        assert_eq!(
+            fs::read(&decrypted).expect("read decrypted"),
+            b"zip bytes with apiKey-like secret sk-test"
+        );
         fs::remove_dir_all(root).ok();
     }
 }

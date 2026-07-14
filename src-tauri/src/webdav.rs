@@ -8,11 +8,7 @@ use rand::{rngs::OsRng, RngCore};
 use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    path::Path,
-    time::Duration,
-};
+use std::{fs, time::Duration};
 use tempfile::tempdir;
 use url::Url;
 
@@ -77,8 +73,8 @@ impl WebDavSyncSettings {
         if self.base_url.trim().is_empty() {
             return Err("WebDAV 地址不能为空".to_string());
         }
-        let parsed = Url::parse(self.base_url.trim())
-            .map_err(|err| format!("WebDAV 地址无效：{err}"))?;
+        let parsed =
+            Url::parse(self.base_url.trim()).map_err(|err| format!("WebDAV 地址无效：{err}"))?;
         if !matches!(parsed.scheme(), "http" | "https") {
             return Err("WebDAV 地址必须使用 http 或 https".to_string());
         }
@@ -161,11 +157,15 @@ pub async fn webdav_download_sync(
         strategy,
         generation: None,
         remote_path: None,
-        backup_dir: apply.backup_dir.map(|path| path.to_string_lossy().to_string()),
+        backup_dir: apply
+            .backup_dir
+            .map(|path| path.to_string_lossy().to_string()),
         conflicts: apply.conflicts,
         message: match strategy {
             SyncStrategy::SmartMerge => "已从远端下载 ZIP，并与本机配置智能合并".to_string(),
-            SyncStrategy::RemoteOverwriteLocal => "已使用远端 ZIP 覆盖本机会话和模型配置".to_string(),
+            SyncStrategy::RemoteOverwriteLocal => {
+                "已使用远端 ZIP 覆盖本机会话和模型配置".to_string()
+            }
             SyncStrategy::LocalOverwriteRemote => unreachable!(),
         },
     })
@@ -243,7 +243,13 @@ async fn publish_local_snapshot(
     let latest_path = remote_latest_manifest_path(settings);
 
     ensure_remote_directories(settings, &generation).await?;
-    put_bytes(settings, &path_segments(&package_path), package_bytes.clone(), "application/zip").await?;
+    put_bytes(
+        settings,
+        &path_segments(&package_path),
+        package_bytes.clone(),
+        "application/zip",
+    )
+    .await?;
 
     let public_manifest = WebDavPublicManifest {
         schema_version: 1,
@@ -256,8 +262,20 @@ async fn publish_local_snapshot(
     };
     let manifest_bytes = serde_json::to_vec_pretty(&public_manifest)
         .map_err(|err| format!("序列化远端同步清单失败：{err}"))?;
-    put_bytes(settings, &path_segments(&manifest_path), manifest_bytes.clone(), "application/json").await?;
-    put_bytes(settings, &path_segments(&latest_path), manifest_bytes, "application/json").await?;
+    put_bytes(
+        settings,
+        &path_segments(&manifest_path),
+        manifest_bytes.clone(),
+        "application/json",
+    )
+    .await?;
+    put_bytes(
+        settings,
+        &path_segments(&latest_path),
+        manifest_bytes,
+        "application/json",
+    )
+    .await?;
 
     Ok(WebDavSyncResult {
         status: "uploaded".to_string(),
@@ -282,9 +300,13 @@ async fn download_and_apply_snapshot(
         .await?
         .ok_or_else(|| "远端没有可下载的 WorkBuddy 同步包".to_string())?;
     validate_remote_package_path(settings, &manifest.encrypted_package_path)?;
-    let package_bytes = get_bytes(settings, &path_segments(&manifest.encrypted_package_path), 512 * 1024 * 1024)
-        .await?
-        .ok_or_else(|| "远端同步包不存在".to_string())?;
+    let package_bytes = get_bytes(
+        settings,
+        &path_segments(&manifest.encrypted_package_path),
+        512 * 1024 * 1024,
+    )
+    .await?
+    .ok_or_else(|| "远端同步包不存在".to_string())?;
     let actual_hash = sha256_hex(&package_bytes);
     if actual_hash != manifest.encrypted_package_sha256 {
         return Err(format!(
@@ -321,13 +343,15 @@ async fn download_and_apply_snapshot(
     apply_sync_package(&workbuddy_dir()?, &plain_zip, strategy)
 }
 
-async fn fetch_latest_manifest(settings: &WebDavSyncSettings) -> Result<Option<WebDavPublicManifest>, String> {
+async fn fetch_latest_manifest(
+    settings: &WebDavSyncSettings,
+) -> Result<Option<WebDavPublicManifest>, String> {
     let latest = remote_latest_manifest_path(settings);
     let Some(bytes) = get_bytes(settings, &path_segments(&latest), 1024 * 1024).await? else {
         return Ok(None);
     };
-    let manifest: WebDavPublicManifest = serde_json::from_slice(&bytes)
-        .map_err(|err| format!("解析远端同步清单失败：{err}"))?;
+    let manifest: WebDavPublicManifest =
+        serde_json::from_slice(&bytes).map_err(|err| format!("解析远端同步清单失败：{err}"))?;
     Ok(Some(manifest))
 }
 
@@ -350,7 +374,10 @@ fn remote_generation_manifest_path(settings: &WebDavSyncSettings, generation: &s
 }
 
 fn remote_latest_manifest_path(settings: &WebDavSyncSettings) -> String {
-    format!("{}/{PROTOCOL_VERSION}/{LATEST_MANIFEST_NAME}", settings.remote_root())
+    format!(
+        "{}/{PROTOCOL_VERSION}/{LATEST_MANIFEST_NAME}",
+        settings.remote_root()
+    )
 }
 
 fn validate_remote_package_path(
@@ -374,7 +401,10 @@ fn validate_remote_package_path(
     }
 }
 
-async fn ensure_remote_directories(settings: &WebDavSyncSettings, generation: &str) -> Result<(), String> {
+async fn ensure_remote_directories(
+    settings: &WebDavSyncSettings,
+    generation: &str,
+) -> Result<(), String> {
     let dirs = [
         settings.remote_root(),
         format!("{}/{PROTOCOL_VERSION}", settings.remote_root()),
@@ -390,7 +420,10 @@ async fn ensure_remote_directories(settings: &WebDavSyncSettings, generation: &s
     Ok(())
 }
 
-async fn propfind_exists(settings: &WebDavSyncSettings, segments: &[String]) -> Result<bool, String> {
+async fn propfind_exists(
+    settings: &WebDavSyncSettings,
+    segments: &[String],
+) -> Result<bool, String> {
     let client = reqwest::Client::new();
     let url = build_remote_url(&settings.base_url, segments)?;
     let response = client
@@ -404,7 +437,10 @@ async fn propfind_exists(settings: &WebDavSyncSettings, segments: &[String]) -> 
     Ok(response.status().is_success())
 }
 
-async fn mkcol_if_missing(settings: &WebDavSyncSettings, segments: &[String]) -> Result<(), String> {
+async fn mkcol_if_missing(
+    settings: &WebDavSyncSettings,
+    segments: &[String],
+) -> Result<(), String> {
     let client = reqwest::Client::new();
     let url = build_remote_url(&settings.base_url, segments)?;
     let response = client
@@ -418,10 +454,18 @@ async fn mkcol_if_missing(settings: &WebDavSyncSettings, segments: &[String]) ->
     if status.is_success() || status == StatusCode::CREATED {
         return Ok(());
     }
-    if matches!(status, StatusCode::METHOD_NOT_ALLOWED | StatusCode::CONFLICT) && propfind_exists(settings, segments).await? {
+    if matches!(
+        status,
+        StatusCode::METHOD_NOT_ALLOWED | StatusCode::CONFLICT
+    ) && propfind_exists(settings, segments).await?
+    {
         return Ok(());
     }
-    Err(format!("WebDAV MKCOL 失败：{} {}", status.as_u16(), redact_url(&url)))
+    Err(format!(
+        "WebDAV MKCOL 失败：{} {}",
+        status.as_u16(),
+        redact_url(&url)
+    ))
 }
 
 async fn put_bytes(
@@ -444,7 +488,11 @@ async fn put_bytes(
     if response.status().is_success() {
         return Ok(());
     }
-    Err(format!("WebDAV PUT 失败：{} {}", response.status().as_u16(), redact_url(&url)))
+    Err(format!(
+        "WebDAV PUT 失败：{} {}",
+        response.status().as_u16(),
+        redact_url(&url)
+    ))
 }
 
 async fn get_bytes(
@@ -465,7 +513,11 @@ async fn get_bytes(
         return Ok(None);
     }
     if !response.status().is_success() {
-        return Err(format!("WebDAV GET 失败：{} {}", response.status().as_u16(), redact_url(&url)));
+        return Err(format!(
+            "WebDAV GET 失败：{} {}",
+            response.status().as_u16(),
+            redact_url(&url)
+        ));
     }
     let bytes = response
         .bytes()

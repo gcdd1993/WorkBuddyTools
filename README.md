@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-0.2.2-blue)
+![Version](https://img.shields.io/badge/version-0.2.3-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB)
 ![Rust](https://img.shields.io/badge/Rust-2021-000000)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
@@ -15,17 +15,16 @@ WorkBuddy Tools is a Windows desktop companion for managing WorkBuddy model prov
 
 ### Model and provider management
 
-![Model and provider management screenshot placeholder](docs/screenshots/model-management.svg)
+![Model management](docs/screenshots/model-management.png)
+![Provider management](docs/screenshots/model-provider.png)
 
 ### Session management
 
-![Session management screenshot placeholder](docs/screenshots/session-management.svg)
+![Session management](docs/screenshots/session-management.png)
 
 ### WebDAV sync
 
-![WebDAV sync screenshot placeholder](docs/screenshots/webdav-sync.svg)
-
-The files above are placeholders. Replace them with screenshots using the same filenames to update both README languages automatically.
+![WebDAV sync](docs/screenshots/webdav-sync.png)
 
 ## Features
 

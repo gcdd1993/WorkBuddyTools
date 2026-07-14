@@ -1,6 +1,6 @@
 pub mod crypto;
-pub mod settings;
 pub mod sessions;
+pub mod settings;
 pub mod sync;
 pub mod webdav;
 
