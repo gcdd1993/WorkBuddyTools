@@ -64,6 +64,8 @@ struct PackageEntry {
 #[serde(rename_all = "camelCase")]
 struct SessionMetadataExport {
     schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_workspace_path: Option<String>,
     sessions: Vec<BTreeMap<String, Value>>,
 }
 
@@ -89,6 +91,12 @@ struct SessionColumn {
     not_null: bool,
     default_value: Option<String>,
     primary_key: bool,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspacePathRewrite {
+    remote: String,
+    local: String,
 }
 
 pub fn build_sync_package(
@@ -347,9 +355,10 @@ fn collect_sync_entries(workbuddy_dir: &Path) -> Result<Vec<PackageEntry>, Strin
 }
 
 fn export_session_metadata(workbuddy_dir: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let default_workspace_path = read_default_workspace_path(workbuddy_dir)?;
     let database = workbuddy_dir.join("workbuddy.db");
     if !database.exists() {
-        return serialize_session_exports(Vec::new(), Vec::new());
+        return serialize_session_exports(Vec::new(), Vec::new(), default_workspace_path);
     }
     let connection = Connection::open(&database)
         .map_err(|err| format!("打开 WorkBuddy 会话数据库失败：{err}"))?;
@@ -398,14 +407,15 @@ fn export_session_metadata(workbuddy_dir: &Path) -> Result<(Vec<u8>, Vec<u8>), S
         }).map_err(|err| format!("查询会话墓碑失败：{err}"))?;
         for row in rows { deleted.push(row.map_err(|err| format!("读取会话墓碑失败：{err}"))?); }
     }
-    serialize_session_exports(active, deleted)
+    serialize_session_exports(active, deleted, default_workspace_path)
 }
 
 fn serialize_session_exports(
     sessions: Vec<BTreeMap<String, Value>>,
     tombstones: Vec<SessionTombstone>,
+    default_workspace_path: Option<String>,
 ) -> Result<(Vec<u8>, Vec<u8>), String> {
-    let sessions = serde_json::to_vec(&SessionMetadataExport { schema_version: 1, sessions })
+    let sessions = serde_json::to_vec(&SessionMetadataExport { schema_version: 1, default_workspace_path, sessions })
         .map_err(|err| format!("序列化会话元数据失败：{err}"))?;
     let tombstones = serde_json::to_vec(&SessionTombstoneExport { schema_version: 1, tombstones })
         .map_err(|err| format!("序列化会话墓碑失败：{err}"))?;
@@ -441,6 +451,23 @@ fn push_optional_file(entries: &mut Vec<PackageEntry>, source: PathBuf, archive_
         });
     }
     Ok(())
+}
+
+fn read_default_workspace_path(workbuddy_dir: &Path) -> Result<Option<String>, String> {
+    let config_path = workbuddy_dir.join("app").join("app-config.json");
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&config_path)
+        .map_err(|err| format!("读取 WorkBuddy 默认工作空间配置失败：{err}"))?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|err| format!("解析 WorkBuddy 默认工作空间配置失败：{err}"))?;
+    Ok(value
+        .get("defaultWorkspacePath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned))
 }
 
 fn is_excluded_component(path: &Path) -> bool {
@@ -585,9 +612,17 @@ fn apply_session_metadata(
     if tombstone_export.schema_version != 1 {
         return Err("不支持的会话墓碑版本".to_string());
     }
+    let local_default_workspace_path = read_default_workspace_path(workbuddy_dir)?;
+    let workspace_rewrite = workspace_path_rewrite(
+        export.default_workspace_path.as_deref(),
+        local_default_workspace_path.as_deref(),
+    );
 
     let database = workbuddy_dir.join("workbuddy.db");
     if !database.exists() {
+        if export.sessions.is_empty() && tombstone_export.tombstones.is_empty() {
+            return Ok(());
+        }
         return Err("本机缺少 workbuddy.db，无法导入会话元数据".to_string());
     }
     let mut connection = Connection::open(&database)
@@ -616,6 +651,9 @@ fn apply_session_metadata(
     }
     for tombstone in &tombstone_export.tombstones {
         apply_session_tombstone(&transaction, &columns, tombstone, strategy)?;
+    }
+    if let Some(rewrite) = workspace_rewrite.as_ref() {
+        rewrite_workspace_paths(&transaction, rewrite)?;
     }
     transaction.commit().map_err(|err| format!("提交会话元数据事务失败：{err}"))
 }
@@ -671,6 +709,172 @@ fn record_text(record: &BTreeMap<String, Value>, column: &str) -> Option<String>
         Some(Value::String(value)) if !value.is_empty() => Some(value.clone()),
         _ => None,
     }
+}
+
+fn workspace_path_rewrite(remote: Option<&str>, local: Option<&str>) -> Option<WorkspacePathRewrite> {
+    let remote = trim_trailing_path_separators(remote?).to_string();
+    let local = trim_trailing_path_separators(local?).to_string();
+    if remote.is_empty()
+        || local.is_empty()
+        || canonical_workspace_path(&remote) == canonical_workspace_path(&local)
+    {
+        return None;
+    }
+    Some(WorkspacePathRewrite { remote, local })
+}
+
+fn rewrite_workspace_paths(
+    transaction: &Transaction<'_>,
+    rewrite: &WorkspacePathRewrite,
+) -> Result<(), String> {
+    rewrite_table_path_column(transaction, "sessions", "cwd", rewrite)?;
+    rewrite_table_path_column(transaction, "workspaces", "path", rewrite)
+}
+
+fn rewrite_table_path_column(
+    transaction: &Transaction<'_>,
+    table: &str,
+    column: &str,
+    rewrite: &WorkspacePathRewrite,
+) -> Result<(), String> {
+    if !sqlite_table_exists(transaction, table)? || !sqlite_column_exists(transaction, table, column)? {
+        return Ok(());
+    }
+
+    let table_identifier = quote_identifier(table);
+    let column_identifier = quote_identifier(column);
+    let replacements = {
+        let mut statement = transaction
+            .prepare(&format!(
+                "SELECT DISTINCT {column_identifier} FROM {table_identifier} WHERE {column_identifier} IS NOT NULL"
+            ))
+            .map_err(|err| format!("准备修复 {table}.{column} 路径失败：{err}"))?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|err| format!("查询待修复 {table}.{column} 路径失败：{err}"))?;
+        let mut replacements = Vec::new();
+        for row in rows {
+            let old_path = row.map_err(|err| format!("读取待修复 {table}.{column} 路径失败：{err}"))?;
+            if let Some(new_path) = rewrite_workspace_path(&old_path, rewrite) {
+                if new_path != old_path {
+                    replacements.push((old_path, new_path));
+                }
+            }
+        }
+        replacements
+    };
+
+    if replacements.is_empty() {
+        return Ok(());
+    }
+    let sql = format!("UPDATE {table_identifier} SET {column_identifier} = ?1 WHERE {column_identifier} = ?2");
+    for (old_path, new_path) in replacements {
+        transaction
+            .execute(&sql, rusqlite::params![new_path, old_path])
+            .map_err(|err| format!("修复 {table}.{column} 路径失败：{err}"))?;
+    }
+    Ok(())
+}
+
+fn sqlite_table_exists(transaction: &Transaction<'_>, table: &str) -> Result<bool, String> {
+    transaction
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+            [table],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(|err| format!("检查数据库表 {table} 失败：{err}"))
+}
+
+fn sqlite_column_exists(transaction: &Transaction<'_>, table: &str, column: &str) -> Result<bool, String> {
+    let mut statement = transaction
+        .prepare(&format!("PRAGMA table_info({})", quote_identifier(table)))
+        .map_err(|err| format!("读取数据库表 {table} 结构失败：{err}"))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| format!("查询数据库表 {table} 结构失败：{err}"))?;
+    for row in rows {
+        if row.map_err(|err| format!("解析数据库表 {table} 结构失败：{err}"))? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn rewrite_workspace_path(value: &str, rewrite: &WorkspacePathRewrite) -> Option<String> {
+    let prefix_len = workspace_prefix_len(value, &rewrite.remote)?;
+    let suffix = &value[prefix_len..];
+    let local = trim_trailing_path_separators(&rewrite.local);
+    let suffix = if path_ends_with_separator(local) && suffix.starts_with(is_path_separator) {
+        &suffix[1..]
+    } else {
+        suffix
+    };
+    Some(format!("{local}{suffix}"))
+}
+
+fn workspace_prefix_len(value: &str, prefix: &str) -> Option<usize> {
+    let prefix = trim_trailing_path_separators(prefix);
+    let mut value_chars = value.char_indices();
+    let mut last_end = 0;
+    for prefix_char in prefix.chars() {
+        let (index, value_char) = value_chars.next()?;
+        if normalize_path_char(prefix_char) != normalize_path_char(value_char) {
+            return None;
+        }
+        last_end = index + value_char.len_utf8();
+    }
+    let suffix = &value[last_end..];
+    if suffix.is_empty() || suffix.starts_with(is_path_separator) {
+        Some(last_end)
+    } else {
+        None
+    }
+}
+
+fn trim_trailing_path_separators(value: &str) -> &str {
+    let trimmed = value.trim();
+    let mut end = trimmed.len();
+    while end > 0 {
+        let Some(character) = trimmed[..end].chars().next_back() else {
+            break;
+        };
+        if !is_path_separator(character) {
+            break;
+        }
+        let next_end = end - character.len_utf8();
+        let without_separator = &trimmed[..next_end];
+        if without_separator.is_empty() || without_separator.ends_with(':') {
+            break;
+        }
+        end = next_end;
+    }
+    &trimmed[..end]
+}
+
+fn canonical_workspace_path(value: &str) -> String {
+    trim_trailing_path_separators(value)
+        .chars()
+        .map(normalize_path_char)
+        .collect()
+}
+
+fn normalize_path_char(character: char) -> char {
+    if is_path_separator(character) {
+        '/'
+    } else {
+        character.to_ascii_lowercase()
+    }
+}
+
+fn path_ends_with_separator(value: &str) -> bool {
+    value.chars().next_back().is_some_and(is_path_separator)
+}
+
+fn is_path_separator(character: char) -> bool {
+    matches!(character, '\\' | '/')
 }
 
 fn upsert_session_record(
@@ -1061,6 +1265,51 @@ mod tests {
         fs::write(path, content).expect("write file");
     }
 
+    fn write_app_config(root: &Path, default_workspace_path: &str) {
+        let content = serde_json::to_string(&json!({
+            "defaultWorkspacePath": default_workspace_path
+        }))
+        .expect("serialize app config");
+        write(&root.join("app").join("app-config.json"), &content);
+    }
+
+    fn create_sync_database(root: &Path, session_cwd: Option<&str>, workspace_path: Option<&str>) {
+        let connection = Connection::open(root.join("workbuddy.db")).expect("open test db");
+        connection
+            .execute_batch(
+                "CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    cwd TEXT,
+                    title TEXT,
+                    status TEXT,
+                    updated_at INTEGER,
+                    deleted_at INTEGER
+                );
+                CREATE TABLE workspaces (
+                    id TEXT PRIMARY KEY,
+                    path TEXT
+                );",
+            )
+            .expect("create test schema");
+        if let Some(cwd) = session_cwd {
+            connection
+                .execute(
+                    "INSERT INTO sessions (id, cwd, title, status, updated_at, deleted_at)
+                     VALUES (?1, ?2, 'Remote Session', 'idle', 200, NULL)",
+                    rusqlite::params!["session-1", cwd],
+                )
+                .expect("insert test session");
+        }
+        if let Some(path) = workspace_path {
+            connection
+                .execute(
+                    "INSERT INTO workspaces (id, path) VALUES ('workspace-1', ?1)",
+                    [path],
+                )
+                .expect("insert test workspace");
+        }
+    }
+
     #[test]
     fn package_includes_sessions_models_providers_and_excludes_runtime_files() {
         let root = temp_root("package");
@@ -1137,6 +1386,43 @@ mod tests {
         assert!(backup_dir.join("models.json").exists());
         assert!(backup_dir.join("model-providers.json").exists());
         assert!(fs::read_to_string(local.join("models.json")).expect("models").contains("remote"));
+        fs::remove_dir_all(local).ok();
+        fs::remove_dir_all(remote).ok();
+    }
+
+    #[test]
+    fn apply_rewrites_remote_default_workspace_paths_to_local_default() {
+        let remote = temp_root("remote-workspace-path");
+        let local = temp_root("local-workspace-path");
+        let remote_default = r"D:\OneDrive\WorkBuddy\WorkSpace";
+        let local_default = r"E:\OneDrive\WorkBuddy\WorkSpace";
+        let remote_session_cwd = format!(r"{}\ProjectA", remote_default);
+        let local_session_cwd = format!(r"{}\ProjectA", local_default);
+        let remote_workspace_path = format!(r"{}\ProjectB", remote_default);
+        let local_workspace_path = format!(r"{}\ProjectB", local_default);
+
+        write_app_config(&remote, remote_default);
+        create_sync_database(&remote, Some(&remote_session_cwd), None);
+        let package = remote.join("remote.zip");
+        build_sync_package(&remote, &package).expect("build remote package");
+
+        write_app_config(&local, local_default);
+        create_sync_database(&local, None, Some(&remote_workspace_path));
+
+        apply_sync_package(&local, &package, SyncStrategy::SmartMerge)
+            .expect("apply package");
+
+        let connection = Connection::open(local.join("workbuddy.db")).expect("open local db");
+        let actual_session_cwd: String = connection
+            .query_row("SELECT cwd FROM sessions WHERE id = 'session-1'", [], |row| row.get(0))
+            .expect("read session cwd");
+        let actual_workspace_path: String = connection
+            .query_row("SELECT path FROM workspaces WHERE id = 'workspace-1'", [], |row| row.get(0))
+            .expect("read workspace path");
+
+        assert_eq!(actual_session_cwd, local_session_cwd);
+        assert_eq!(actual_workspace_path, local_workspace_path);
+
         fs::remove_dir_all(local).ok();
         fs::remove_dir_all(remote).ok();
     }
