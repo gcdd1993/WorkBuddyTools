@@ -804,6 +804,8 @@ td {
 .session-details dt { color: var(--color-muted); font-size: 12px; }
 .session-details dd { color: var(--color-foreground); font-size: 12px; margin: 0; }
 .session-card-actions { align-items: center; display: flex; flex-direction: column; flex-shrink: 0; gap: 6px; }
+.session-card-actions .secondary-button,
+.session-card-actions .danger-button { min-height: 38px; width: 96px; }
 .session-card-actions small { color: var(--color-muted); font-size: 11px; }
 
 .theme-toggle {
@@ -1193,6 +1195,8 @@ td {
   .session-list { max-height: 60vh; padding: 14px; }
   .session-card { align-items: stretch; flex-direction: column; }
   .session-card-actions { align-items: stretch; }
+  .session-card-actions .secondary-button,
+  .session-card-actions .danger-button { width: 100%; }
 
   .provider-form,
   .provider-model-list,

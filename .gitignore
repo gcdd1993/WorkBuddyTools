@@ -7,3 +7,10 @@ src-tauri/target/
 
 *.log
 .DS_Store
+
+# Keep README screenshot assets even when a global Git rule ignores docs/.
+!docs/
+docs/*
+!docs/screenshots/
+docs/screenshots/*
+!docs/screenshots/*.svg

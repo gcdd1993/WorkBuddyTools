@@ -35,6 +35,14 @@ pub struct DeleteSessionResult {
     pub warning: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateSessionInput {
+    pub session_id: String,
+    pub title: String,
+    pub cwd: String,
+}
+
 #[derive(Debug)]
 struct SessionRecord {
     id: String,
@@ -42,6 +50,7 @@ struct SessionRecord {
     title: Option<String>,
     custom_title: Option<String>,
     status: Option<String>,
+    model: Option<String>,
     created_at: Option<i64>,
     updated_at: Option<i64>,
     last_activity_at: Option<i64>,
@@ -61,7 +70,7 @@ pub fn list_workbuddy_sessions() -> Result<Vec<WorkBuddySessionSummary>, String>
     let connection = open_database(&root)?;
     let mut statement = connection
         .prepare(
-            "SELECT id, cwd, title, custom_title, status, created_at, updated_at, last_activity_at
+            "SELECT id, cwd, title, custom_title, status, model, created_at, updated_at, last_activity_at
              FROM sessions WHERE deleted_at IS NULL ORDER BY COALESCE(last_activity_at, updated_at, created_at) DESC",
         )
         .map_err(|error| format!("读取会话表失败：{error}"))?;
@@ -80,7 +89,7 @@ pub fn list_workbuddy_sessions() -> Result<Vec<WorkBuddySessionSummary>, String>
                 .unwrap_or_else(|| "未命名会话".to_string()),
             cwd: record.cwd,
             status: record.status.unwrap_or_default(),
-            model: String::new(),
+            model: record.model.unwrap_or_default(),
             created_at: record.created_at,
             updated_at: record.updated_at,
             last_activity_at: record.last_activity_at,
@@ -88,6 +97,37 @@ pub fn list_workbuddy_sessions() -> Result<Vec<WorkBuddySessionSummary>, String>
         });
     }
     Ok(sessions)
+}
+
+#[tauri::command]
+pub fn update_workbuddy_session(input: UpdateSessionInput) -> Result<(), String> {
+    validate_session_id(&input.session_id)?;
+    let title = required_trimmed(input.title, "会话名称")?;
+    let cwd = required_trimmed(input.cwd, "工作目录")?;
+    let root = workbuddy_dir()?;
+    let mut connection = open_database(&root)?;
+    let record = load_session(&connection, &input.session_id)?
+        .ok_or_else(|| "会话不存在或已经删除".to_string())?;
+    if record.status.as_deref() == Some("working") {
+        return Err("正在运行的会话不能编辑，请先结束会话".to_string());
+    }
+
+    let updated_at = Utc::now().timestamp_millis();
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("开启会话编辑事务失败：{error}"))?;
+    let changed = transaction
+        .execute(
+            "UPDATE sessions SET custom_title = ?1, cwd = ?2, updated_at = ?3 WHERE id = ?4 AND deleted_at IS NULL",
+            params![title, cwd, updated_at, input.session_id],
+        )
+        .map_err(|error| format!("更新会话失败：{error}"))?;
+    if changed != 1 {
+        return Err("会话状态已变化，未保存修改".to_string());
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("提交会话编辑失败：{error}"))
 }
 
 #[tauri::command]
@@ -156,16 +196,17 @@ fn map_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRecord> {
         title: row.get(2)?,
         custom_title: row.get(3)?,
         status: row.get(4)?,
-        created_at: row.get(5)?,
-        updated_at: row.get(6)?,
-        last_activity_at: row.get(7)?,
+        model: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        last_activity_at: row.get(8)?,
     })
 }
 
 fn load_session(connection: &Connection, id: &str) -> Result<Option<SessionRecord>, String> {
     connection
         .query_row(
-            "SELECT id, cwd, title, custom_title, status, created_at, updated_at, last_activity_at
+            "SELECT id, cwd, title, custom_title, status, model, created_at, updated_at, last_activity_at
              FROM sessions WHERE id = ?1 AND deleted_at IS NULL",
             [id],
             map_session,
@@ -184,6 +225,14 @@ fn validate_session_id(id: &str) -> Result<(), String> {
         return Err("无效的会话 ID".to_string());
     }
     Ok(())
+}
+
+fn required_trimmed(value: String, label: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{label}不能为空"));
+    }
+    Ok(trimmed.to_string())
 }
 
 fn find_session_paths(root: &Path, id: &str) -> Result<Vec<PathBuf>, String> {

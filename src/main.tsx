@@ -54,6 +54,11 @@ type WorkBuddySessionSummary = {
   sizeBytes: number;
 };
 
+type SessionEditForm = {
+  title: string;
+  cwd: string;
+};
+
 type DeleteSessionResult = {
   message?: string;
 };
@@ -188,6 +193,9 @@ function App() {
   const [sessions, setSessions] = useState<WorkBuddySessionSummary[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [deletingSessionId, setDeletingSessionId] = useState("");
+  const [editingSession, setEditingSession] = useState<WorkBuddySessionSummary | null>(null);
+  const [sessionEditForm, setSessionEditForm] = useState<SessionEditForm>({ title: "", cwd: "" });
+  const [savingSession, setSavingSession] = useState(false);
   const lastAutoFetchedProviderId = useRef("");
 
   useEffect(() => {
@@ -317,6 +325,51 @@ function App() {
       setError(toErrorMessage(err));
     } finally {
       setDeletingSessionId("");
+    }
+  }
+
+  function openEditSessionDialog(session: WorkBuddySessionSummary) {
+    if (session.status.toLowerCase() === "working") {
+      setError("正在运行的会话不能编辑，请先结束会话");
+      return;
+    }
+    setEditingSession(session);
+    setSessionEditForm({
+      title: session.title || "",
+      cwd: session.cwd || "",
+    });
+  }
+
+  function closeEditSessionDialog() {
+    if (savingSession) {
+      return;
+    }
+    setEditingSession(null);
+    setSessionEditForm({ title: "", cwd: "" });
+  }
+
+  async function handleSaveSession(event: FormEvent) {
+    event.preventDefault();
+    if (!editingSession) return;
+    setSavingSession(true);
+    setError("");
+    setMessage("");
+    try {
+      await invokeCommand("update_workbuddy_session", {
+        input: {
+          sessionId: editingSession.id,
+          title: sessionEditForm.title,
+          cwd: sessionEditForm.cwd,
+        },
+      });
+      setMessage("会话已保存");
+      setEditingSession(null);
+      setSessionEditForm({ title: "", cwd: "" });
+      await refreshSessions();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setSavingSession(false);
     }
   }
 
@@ -730,7 +783,14 @@ function App() {
           sessions={sessions}
           loading={sessionsLoading}
           deletingSessionId={deletingSessionId}
+          editingSession={editingSession}
+          sessionEditForm={sessionEditForm}
+          savingSession={savingSession}
           onRefresh={refreshSessions}
+          onEdit={openEditSessionDialog}
+          onEditFormChange={setSessionEditForm}
+          onSaveEdit={handleSaveSession}
+          onCloseEdit={closeEditSessionDialog}
           onDelete={handleDeleteSession}
         />
       )}
@@ -784,11 +844,31 @@ function SettingsPage({ settings, savedSettings, saving, strategy, syncLoading, 
   );
 }
 
-function SessionsTab({ sessions, loading, deletingSessionId, onRefresh, onDelete }: {
+function SessionsTab({
+  sessions,
+  loading,
+  deletingSessionId,
+  editingSession,
+  sessionEditForm,
+  savingSession,
+  onRefresh,
+  onEdit,
+  onEditFormChange,
+  onSaveEdit,
+  onCloseEdit,
+  onDelete,
+}: {
   sessions: WorkBuddySessionSummary[];
   loading: boolean;
   deletingSessionId: string;
+  editingSession: WorkBuddySessionSummary | null;
+  sessionEditForm: SessionEditForm;
+  savingSession: boolean;
   onRefresh: () => void;
+  onEdit: (session: WorkBuddySessionSummary) => void;
+  onEditFormChange: (next: SessionEditForm) => void;
+  onSaveEdit: (event: FormEvent) => void;
+  onCloseEdit: () => void;
   onDelete: (session: WorkBuddySessionSummary) => void;
 }) {
   const [query, setQuery] = useState("");
@@ -844,17 +924,128 @@ function SessionsTab({ sessions, loading, deletingSessionId, onRefresh, onDelete
                   </dl>
                 </div>
                 <div className="session-card-actions">
+                  <button className="secondary-button" type="button" disabled={working || Boolean(deletingSessionId)} onClick={() => onEdit(session)} title={working ? "正在运行的会话不能编辑" : "编辑会话"}>
+                    <Pencil size={16} />编辑
+                  </button>
                   <button className="danger-button" type="button" disabled={working || Boolean(deletingSessionId)} onClick={() => onDelete(session)} title={working ? "正在运行的会话不能删除" : "移入会话回收站"}>
                     {deleting ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}{working ? "运行中" : "删除"}
                   </button>
-                  {working ? <small>正在运行，无法删除</small> : null}
+                  {working ? <small>正在运行，无法编辑或删除</small> : null}
                 </div>
               </article>
             );
           })}
         </div>
       ) : <EmptyState label={loading ? "正在读取本机会话..." : normalizedQuery ? "没有匹配的会话" : "暂无本机会话"} />}
+      {editingSession ? (
+        <SessionEditDialog
+          session={editingSession}
+          form={sessionEditForm}
+          saving={savingSession}
+          onChange={onEditFormChange}
+          onSave={onSaveEdit}
+          onClose={onCloseEdit}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function SessionEditDialog({
+  session,
+  form,
+  saving,
+  onChange,
+  onSave,
+  onClose,
+}: {
+  session: WorkBuddySessionSummary;
+  form: SessionEditForm;
+  saving: boolean;
+  onChange: (next: SessionEditForm) => void;
+  onSave: (event: FormEvent) => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section
+        className="provider-dialog session-edit-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="session-edit-dialog-title"
+      >
+        <div className="dialog-header">
+          <div>
+            <h2 id="session-edit-dialog-title">编辑会话</h2>
+            <p>{session.id}</p>
+          </div>
+          <button
+            className="icon-button"
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            aria-label="关闭会话编辑表单"
+            title="关闭"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <form className="provider-form dialog-form" onSubmit={onSave}>
+          <label>
+            <span className="field-label">
+              会话名称
+              <small>必填</small>
+            </span>
+            <input
+              value={form.title}
+              onChange={(event) => onChange({ ...form, title: event.target.value })}
+              placeholder="输入会话名称"
+              autoFocus
+              required
+            />
+          </label>
+          <label>
+            <span className="field-label">
+              工作目录
+              <small>必填</small>
+            </span>
+            <input
+              value={form.cwd}
+              onChange={(event) => onChange({ ...form, cwd: event.target.value })}
+              placeholder={"D:\\OneDrive\\WorkBuddy\\WorkSpace\\Project"}
+              required
+            />
+          </label>
+
+          <div className="dialog-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={onClose}
+              disabled={saving}
+            >
+              取消
+            </button>
+            <button className="primary-button" type="submit" disabled={saving}>
+              {saving ? <Loader2 className="spin" size={16} /> : <Check size={16} />}
+              保存修改
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 

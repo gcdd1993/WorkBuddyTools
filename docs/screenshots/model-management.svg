@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" role="img" aria-labelledby="title desc">
+  <title id="title">Model management screenshot placeholder</title>
+  <desc id="desc">Replace this file with the WorkBuddy Tools model and provider management screenshot.</desc>
+  <rect width="1280" height="720" fill="#f5f7fa"/>
+  <rect x="32" y="32" width="1216" height="656" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <rect x="32" y="32" width="1216" height="72" rx="8" fill="#172033"/>
+  <circle cx="72" cy="68" r="14" fill="#38bdf8"/>
+  <rect x="104" y="57" width="210" height="22" rx="4" fill="#ffffff" opacity="0.92"/>
+  <rect x="72" y="144" width="220" height="500" rx="6" fill="#eef2f7"/>
+  <rect x="328" y="144" width="880" height="56" rx="6" fill="#e2e8f0"/>
+  <g fill="#f8fafc" stroke="#d8e0ea">
+    <rect x="328" y="224" width="880" height="92" rx="6"/>
+    <rect x="328" y="332" width="880" height="92" rx="6"/>
+    <rect x="328" y="440" width="880" height="92" rx="6"/>
+  </g>
+  <text x="768" y="595" text-anchor="middle" fill="#475569" font-family="Segoe UI, Arial, sans-serif" font-size="28">Model &amp; Provider Management</text>
+  <text x="768" y="632" text-anchor="middle" fill="#64748b" font-family="Segoe UI, Arial, sans-serif" font-size="18">Replace docs/screenshots/model-management.svg</text>
+</svg>

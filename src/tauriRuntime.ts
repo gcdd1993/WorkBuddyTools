@@ -35,6 +35,7 @@ export function getBrowserPreviewResult(command: string, args?: Record<string, u
     case "webdav_download_sync":
     case "webdav_run_sync":
       throw new Error("WebDAV 同步需要在 Tauri 桌面应用中运行。");
+    case "update_workbuddy_session":
     case "delete_workbuddy_session":
       throw new Error("会话管理需要在 Tauri 桌面应用中运行。");
     default:

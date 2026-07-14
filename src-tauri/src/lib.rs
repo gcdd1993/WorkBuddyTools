@@ -819,6 +819,7 @@ pub fn run() {
             settings::load_app_settings,
             settings::save_app_settings,
             sessions::list_workbuddy_sessions,
+            sessions::update_workbuddy_session,
             sessions::delete_workbuddy_session,
             webdav::webdav_test_connection,
             webdav::webdav_fetch_remote_info,
