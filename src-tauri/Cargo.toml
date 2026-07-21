@@ -26,9 +26,11 @@ reqwest = { version = "0.12.12", features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.32.1", features = ["bundled", "backup"] }
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.134"
+semver = "1"
 sha2 = "0.10.8"
 tauri = { version = "2.2.5", features = [] }
 tauri-plugin-opener = "2.2.5"
+tauri-plugin-updater = "2"
 tempfile = "3.15.0"
 tokio = { version = "1.42.0", features = ["process"] }
 url = "2.5.4"

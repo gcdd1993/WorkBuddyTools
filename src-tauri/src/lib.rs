@@ -6,6 +6,7 @@ pub mod webdav;
 
 use chrono::{DateTime, Utc};
 use reqwest::StatusCode;
+use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::OnceLock;
@@ -15,6 +16,8 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use tauri::{AppHandle, Emitter};
+use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
 const MODELS_FILE_NAME: &str = "models.json";
@@ -804,9 +807,142 @@ fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppUpdateInfo {
+    current_version: String,
+    available_version: String,
+    notes: Option<String>,
+    installable: bool,
+    release_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GitHubReleaseInfo {
+    tag_name: String,
+    html_url: String,
+    body: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateDownloadProgress {
+    downloaded: u64,
+    total: Option<u64>,
+}
+
+#[tauri::command]
+async fn check_app_update(app: AppHandle) -> Result<Option<AppUpdateInfo>, String> {
+    let updater = app
+        .updater_builder()
+        .build()
+        .map_err(|error| format!("初始化更新器失败：{error}"))?;
+    let current_version = app.package_info().version.to_string();
+    match updater.check().await {
+        Ok(update) => Ok(update.map(|update| AppUpdateInfo {
+            current_version,
+            available_version: update.version,
+            notes: update.body,
+            installable: true,
+            release_url: None,
+        })),
+        Err(updater_error) => {
+            // 老版本 Release 没有 latest.json/.sig 时，Tauri updater 会把 404
+            // 统一报告为 invalid release JSON。回退到 GitHub Releases API，
+            // 避免当前已经是最新版时仍向用户显示检查失败。
+            check_github_release_fallback(&current_version)
+                .await
+                .map_err(|fallback_error| {
+                    format!(
+                        "检查更新失败：{updater_error}；读取 GitHub Release 也失败：{fallback_error}"
+                    )
+                })
+        }
+    }
+}
+
+async fn check_github_release_fallback(
+    current_version: &str,
+) -> Result<Option<AppUpdateInfo>, String> {
+    let release = reqwest::Client::new()
+        .get("https://api.github.com/repos/gcdd1993/WorkBuddyTools/releases/latest")
+        .header("User-Agent", "WorkBuddyTools-Updater")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|error| error.to_string())?
+        .error_for_status()
+        .map_err(|error| error.to_string())?
+        .json::<GitHubReleaseInfo>()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let latest_text = release.tag_name.trim_start_matches('v');
+    let current = Version::parse(current_version)
+        .map_err(|error| format!("无法解析当前版本 {current_version}：{error}"))?;
+    let latest = Version::parse(latest_text)
+        .map_err(|error| format!("无法解析最新版本 {latest_text}：{error}"))?;
+
+    if latest <= current {
+        return Ok(None);
+    }
+
+    Ok(Some(AppUpdateInfo {
+        current_version: current_version.to_string(),
+        available_version: latest.to_string(),
+        notes: release.body,
+        installable: false,
+        release_url: Some(release.html_url),
+    }))
+}
+
+#[tauri::command]
+async fn install_app_update(app: AppHandle) -> Result<bool, String> {
+    let updater = app
+        .updater_builder()
+        .build()
+        .map_err(|error| format!("初始化更新器失败：{error}"))?;
+    let Some(update) = updater
+        .check()
+        .await
+        .map_err(|error| format!("检查更新失败：{error}"))?
+    else {
+        return Ok(false);
+    };
+
+    let progress_app = app.clone();
+    let mut downloaded = 0_u64;
+    let bytes = update
+        .download(
+            move |chunk_length, content_length| {
+                downloaded = downloaded.saturating_add(chunk_length as u64);
+                let _ = progress_app.emit(
+                    "app-update-download-progress",
+                    UpdateDownloadProgress {
+                        downloaded,
+                        total: content_length,
+                    },
+                );
+            },
+            || {},
+        )
+        .await
+        .map_err(|error| format!("下载更新失败：{error}"))?;
+
+    update
+        .install(bytes)
+        .map_err(|error| format!("安装更新失败：{error}"))?;
+
+    #[cfg(not(target_os = "windows"))]
+    app.restart();
+
+    Ok(true)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_paths,
             load_workbuddy_models,
@@ -825,7 +961,9 @@ pub fn run() {
             webdav::webdav_fetch_remote_info,
             webdav::webdav_upload_sync,
             webdav::webdav_download_sync,
-            webdav::webdav_run_sync
+            webdav::webdav_run_sync,
+            check_app_update,
+            install_app_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Added automatic signed application update checks, a header update indicator, download progress, and in-app installation with restart.
+- Added Tauri updater artifacts and signing configuration to the GitHub release workflow.
+- Added a GitHub Release fallback for versions published before updater metadata was available.
+
+### Fixed
+
+- Smart merge now maps projects outside the remote default workspace from the remote workspace drive to the local workspace drive while preserving their directory structure.
+
 ## [0.2.3] - 2026-07-14
 
 ### Added

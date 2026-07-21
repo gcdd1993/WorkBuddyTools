@@ -553,6 +553,84 @@ td {
 .settings-sync .sync-content { gap: 14px; }
 .settings-sync .sync-card { min-width: 0; overflow: hidden; }
 
+.update-indicator {
+  color: var(--color-success);
+  position: relative;
+}
+
+.update-indicator::after {
+  background: var(--color-success);
+  border: 2px solid var(--color-surface);
+  border-radius: 999px;
+  content: "";
+  height: 9px;
+  position: absolute;
+  right: 5px;
+  top: 5px;
+  width: 9px;
+}
+
+.update-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.update-card-main {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.update-card-main strong { color: var(--color-foreground); }
+.update-action { flex-shrink: 0; }
+
+.version-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.version-badge {
+  background: var(--color-surface-soft);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 9px;
+}
+
+.version-badge.available {
+  background: var(--color-success-soft);
+  border-color: color-mix(in srgb, var(--color-success) 30%, var(--color-border));
+  color: var(--color-success);
+}
+
+.update-available-message {
+  align-items: flex-start;
+  background: var(--color-primary-soft);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 25%, var(--color-border));
+  border-radius: var(--radius-sm);
+  color: var(--color-primary);
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+}
+
+.update-available-message svg { flex-shrink: 0; margin-top: 1px; }
+.update-available-message p { color: var(--color-muted); line-height: 1.5; margin: 5px 0 0; white-space: pre-wrap; }
+
+.update-progress { display: grid; gap: 8px; }
+.update-progress-label { color: var(--color-muted); display: flex; font-size: 12px; justify-content: space-between; }
+.update-progress-track { background: var(--color-surface-soft); border-radius: 999px; height: 8px; overflow: hidden; }
+.update-progress-track span { background: var(--color-primary); border-radius: inherit; display: block; height: 100%; min-width: 8px; transition: width 180ms ease; }
+
 .warning-box {
   background: var(--color-primary-soft);
   border-top: 1px solid var(--color-border);
@@ -1132,7 +1210,7 @@ td {
 
   .header-actions {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px 44px 44px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) repeat(4, 44px);
     justify-content: flex-start;
     width: 100%;
   }
@@ -1184,6 +1262,8 @@ td {
   }
 
   .settings-grid { grid-template-columns: 1fr; }
+  .update-card-main { align-items: stretch; flex-direction: column; }
+  .update-action { width: 100%; }
   .sync-unconfigured { align-items: stretch; flex-direction: column; }
   .session-toolbar {
     flex: 1 1 auto;

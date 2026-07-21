@@ -149,6 +149,15 @@ Build the release executable without an installer bundle:
 npm run tauri build -- --no-bundle
 ```
 
+## Application Updates
+
+The app checks GitHub Releases after startup, shows an update indicator in the header, and installs signed updates from “Application Settings → About & Updates”. Before publishing a `v*` tag, configure these GitHub Actions secrets:
+
+- `TAURI_SIGNING_PRIVATE_KEY`: the Tauri updater private key paired with the public key in `src-tauri/tauri.conf.json`.
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the private-key password; leave empty for an unencrypted key.
+
+Keep the versions in `package.json`, `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json`, and `VERSION` synchronized before publishing. The release workflow generates signed updater artifacts and `latest.json`. Back up the private key securely: existing installations cannot verify updates signed with a replacement key.
+
 ## Tech Stack
 
 - Tauri 2

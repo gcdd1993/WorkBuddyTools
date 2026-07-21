@@ -1,7 +1,11 @@
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   ArrowLeft,
+  ArrowUpCircle,
   Check,
   CircleAlert,
   Cloud,
@@ -156,6 +160,19 @@ type AppPaths = {
   providersFile: string;
 };
 
+type AppUpdateInfo = {
+  currentVersion: string;
+  availableVersion: string;
+  notes?: string | null;
+  installable: boolean;
+  releaseUrl?: string | null;
+};
+
+type UpdateDownloadProgress = {
+  downloaded: number;
+  total?: number | null;
+};
+
 type ProviderForm = ProviderFormValue;
 
 function App() {
@@ -196,10 +213,22 @@ function App() {
   const [editingSession, setEditingSession] = useState<WorkBuddySessionSummary | null>(null);
   const [sessionEditForm, setSessionEditForm] = useState<SessionEditForm>({ title: "", cwd: "" });
   const [savingSession, setSavingSession] = useState(false);
+  const [appVersion, setAppVersion] = useState("");
+  const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null);
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<UpdateDownloadProgress | null>(null);
+  const updateCheckInFlight = useRef(false);
   const lastAutoFetchedProviderId = useRef("");
 
   useEffect(() => {
     void initializeApp();
+    void getVersion().then(setAppVersion).catch(() => setAppVersion(""));
+
+    const updateTimer = window.setTimeout(() => {
+      void checkForAppUpdate(false);
+    }, 1200);
+    return () => window.clearTimeout(updateTimer);
   }, []);
 
   async function initializeApp() {
@@ -325,6 +354,54 @@ function App() {
       setError(toErrorMessage(err));
     } finally {
       setDeletingSessionId("");
+    }
+  }
+
+  async function checkForAppUpdate(showResult = true) {
+    if (updateCheckInFlight.current) return;
+    updateCheckInFlight.current = true;
+    setCheckingUpdate(true);
+    try {
+      const available = await invokeCommand<AppUpdateInfo | null>("check_app_update");
+      setUpdateInfo(available);
+      if (showResult) {
+        setMessage(available ? `发现新版本 v${available.availableVersion}` : "当前已是最新版本");
+      }
+    } catch (err) {
+      if (showResult) setError(toErrorMessage(err));
+    } finally {
+      setCheckingUpdate(false);
+      updateCheckInFlight.current = false;
+    }
+  }
+
+  async function installAppUpdate() {
+    if (installingUpdate) return;
+    if (updateInfo && !updateInfo.installable) {
+      try {
+        if (updateInfo.releaseUrl) await openUrl(updateInfo.releaseUrl);
+      } catch (err) {
+        setError(toErrorMessage(err));
+      }
+      return;
+    }
+    setInstallingUpdate(true);
+    setUpdateProgress(null);
+    let unlisten: (() => void) | undefined;
+    try {
+      unlisten = await listen<UpdateDownloadProgress>("app-update-download-progress", (event) => {
+        setUpdateProgress(event.payload);
+      });
+      const installed = await invokeCommand<boolean>("install_app_update");
+      if (!installed) {
+        setUpdateInfo(null);
+        setMessage("当前已是最新版本");
+      }
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      unlisten?.();
+      setInstallingUpdate(false);
     }
   }
 
@@ -669,6 +746,17 @@ function App() {
           <button className="icon-button" type="button" onClick={openSettings} title="应用设置" aria-label="打开应用设置">
             <Settings size={18} />
           </button>
+          {updateInfo ? (
+            <button
+              className="icon-button update-indicator"
+              type="button"
+              onClick={openSettings}
+              title={`发现新版本 v${updateInfo.availableVersion}`}
+              aria-label={`发现新版本 v${updateInfo.availableVersion}，打开应用设置`}
+            >
+              <ArrowUpCircle size={19} />
+            </button>
+          ) : null}
           <button
             className="icon-button theme-toggle"
             type="button"
@@ -700,11 +788,18 @@ function App() {
           syncLoading={syncLoading}
           remoteInfo={remoteInfo}
           syncResult={syncResult}
+          appVersion={appVersion}
+          updateInfo={updateInfo}
+          checkingUpdate={checkingUpdate}
+          installingUpdate={installingUpdate}
+          updateProgress={updateProgress}
           onChange={setSettingsDraft}
           onCancel={closeSettings}
           onSave={saveSettings}
           onStrategyChange={setSyncStrategy}
           onSyncAction={runWebDavAction}
+          onCheckUpdate={() => void checkForAppUpdate(true)}
+          onInstallUpdate={() => void installAppUpdate()}
         />
       ) : <>
       <nav className="tabs" aria-label="配置视图" role="tablist">
@@ -799,13 +894,15 @@ function App() {
   );
 }
 
-function SettingsPage({ settings, savedSettings, saving, strategy, syncLoading, remoteInfo, syncResult, onChange, onCancel, onSave, onStrategyChange, onSyncAction }: {
+function SettingsPage({ settings, savedSettings, saving, strategy, syncLoading, remoteInfo, syncResult, appVersion, updateInfo, checkingUpdate, installingUpdate, updateProgress, onChange, onCancel, onSave, onStrategyChange, onSyncAction, onCheckUpdate, onInstallUpdate }: {
   settings: AppSettings | null; savedSettings: AppSettings | null; saving: boolean;
   strategy: SyncStrategy; syncLoading: string; remoteInfo: WebDavRemoteInfo | null; syncResult: WebDavSyncResult | null;
+  appVersion: string; updateInfo: AppUpdateInfo | null; checkingUpdate: boolean; installingUpdate: boolean; updateProgress: UpdateDownloadProgress | null;
   onChange: (settings: AppSettings) => void;
   onCancel: () => void; onSave: (event: FormEvent) => void;
   onStrategyChange: (strategy: SyncStrategy) => void;
   onSyncAction: (command: string, strategy?: SyncStrategy) => void;
+  onCheckUpdate: () => void; onInstallUpdate: () => void;
 }) {
   if (!settings) return <section className="panel settings-page"><EmptyState label="正在读取应用设置..." /></section>;
   const updateWebDav = (field: keyof WebDavSyncSettings, value: string) => onChange({ ...settings, webdav: { ...settings.webdav, [field]: value } });
@@ -838,6 +935,39 @@ function SettingsPage({ settings, savedSettings, saving, strategy, syncLoading, 
             onStrategyChange={onStrategyChange}
             onAction={onSyncAction}
           />
+        </div>
+        <div className="settings-section update-section">
+          <div className="settings-section-heading">
+            <h3>关于与更新</h3>
+            <p>检查 WorkBuddy Tools 的新版本，并通过签名安装包安全升级。</p>
+          </div>
+          <div className="update-card">
+            <div className="update-card-main">
+              <div>
+                <strong>WorkBuddy 模型配置</strong>
+                <div className="version-row">
+                  <span className="version-badge">当前版本 v{appVersion || "--"}</span>
+                  {updateInfo ? <span className="version-badge available">最新版本 v{updateInfo.availableVersion}</span> : null}
+                </div>
+              </div>
+              <button
+                className="primary-button update-action"
+                type="button"
+                onClick={updateInfo ? onInstallUpdate : onCheckUpdate}
+                disabled={checkingUpdate || installingUpdate}
+              >
+                {installingUpdate ? <Loader2 className="spin" size={16} /> : updateInfo ? <Download size={16} /> : checkingUpdate ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}
+                {installingUpdate ? "正在更新" : updateInfo ? `${updateInfo.installable ? "更新到" : "前往下载"} v${updateInfo.availableVersion}` : checkingUpdate ? "正在检查" : "检查更新"}
+              </button>
+            </div>
+            {updateInfo ? (
+              <div className="update-available-message">
+                <ArrowUpCircle size={18} />
+                <div><strong>检测到新版本 v{updateInfo.availableVersion}</strong>{!updateInfo.installable ? <p>该版本尚未提供应用内更新元数据，将打开 GitHub Release 页面手动下载。</p> : updateInfo.notes ? <p>{updateInfo.notes}</p> : null}</div>
+              </div>
+            ) : null}
+            {installingUpdate && updateProgress ? <UpdateProgress progress={updateProgress} /> : null}
+          </div>
         </div>
       </form>
     </section>
@@ -948,6 +1078,20 @@ function SessionsTab({
         />
       ) : null}
     </section>
+  );
+}
+
+function UpdateProgress({ progress }: { progress: UpdateDownloadProgress }) {
+  const percent = progress.total && progress.total > 0
+    ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
+    : null;
+  const downloadedMb = (progress.downloaded / 1024 / 1024).toFixed(1);
+  const totalMb = progress.total ? (progress.total / 1024 / 1024).toFixed(1) : null;
+  return (
+    <div className="update-progress" aria-live="polite">
+      <div className="update-progress-label"><span>正在下载安装包</span><span>{percent === null ? `${downloadedMb} MB` : `${percent}% · ${downloadedMb}/${totalMb} MB`}</span></div>
+      <div className="update-progress-track"><span style={{ width: percent === null ? "28%" : `${percent}%` }} /></div>
+    </div>
   );
 }
 

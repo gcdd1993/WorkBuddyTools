@@ -818,14 +818,18 @@ fn workspace_path_rewrite(
     remote: Option<&str>,
     local: Option<&str>,
 ) -> Option<WorkspacePathRewrite> {
-    let remote = trim_trailing_path_separators(remote?).to_string();
     let local = trim_trailing_path_separators(local?).to_string();
-    if remote.is_empty()
-        || local.is_empty()
-        || canonical_workspace_path(&remote) == canonical_workspace_path(&local)
-    {
+    if local.is_empty() {
         return None;
     }
+    // 即使远端和本机默认目录相同，也要保留 rewrite：远端快照中可能
+    // 混有 D:\WorkSpace 等默认目录之外的绝对路径，需要将其归入本机
+    // defaultWorkspacePath。旧逻辑在 remote == local 时会整体跳过。
+    let remote = remote
+        .map(trim_trailing_path_separators)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&local)
+        .to_string();
     Some(WorkspacePathRewrite { remote, local })
 }
 
@@ -920,15 +924,67 @@ fn sqlite_column_exists(
 }
 
 fn rewrite_workspace_path(value: &str, rewrite: &WorkspacePathRewrite) -> Option<String> {
-    let prefix_len = workspace_prefix_len(value, &rewrite.remote)?;
-    let suffix = &value[prefix_len..];
     let local = trim_trailing_path_separators(&rewrite.local);
-    let suffix = if path_ends_with_separator(local) && suffix.starts_with(is_path_separator) {
-        &suffix[1..]
+
+    // 本来就在本机默认目录下，不重复改写。
+    if workspace_prefix_len(value, local).is_some() {
+        return None;
+    }
+
+    // 首选精确替换远端默认目录前缀。
+    if canonical_workspace_path(&rewrite.remote) != canonical_workspace_path(local) {
+        if let Some(prefix_len) = workspace_prefix_len(value, &rewrite.remote) {
+            return Some(join_workspace_path(local, &value[prefix_len..]));
+        }
+    }
+
+    // 远端会话可能使用默认目录之外、但位于同一远端磁盘的工程目录。
+    // 此时仅映射远端默认目录盘符到本机盘符，保留完整目录结构。
+    rewrite_windows_drive(value, &rewrite.remote, local)
+}
+
+fn rewrite_windows_drive(value: &str, remote_root: &str, local_root: &str) -> Option<String> {
+    let value_drive = windows_drive_letter(value)?;
+    let remote_drive = windows_drive_letter(remote_root)?;
+    let local_drive = windows_drive_letter(local_root)?;
+    if value_drive != remote_drive || remote_drive == local_drive {
+        return None;
+    }
+
+    let mut characters = value.trim().chars();
+    characters.next()?;
+    Some(format!("{local_drive}{}", characters.as_str()))
+}
+
+fn join_workspace_path(root: &str, suffix: &str) -> String {
+    let root = trim_trailing_path_separators(root);
+    let suffix = suffix.trim_start_matches(is_path_separator);
+    if suffix.is_empty() {
+        return root.to_string();
+    }
+    let separator = if root.contains('\\') || is_windows_drive_path(root) {
+        '\\'
     } else {
-        suffix
+        '/'
     };
-    Some(format!("{local}{suffix}"))
+    format!("{root}{separator}{suffix}")
+}
+
+fn windows_drive_letter(value: &str) -> Option<char> {
+    let mut characters = value.trim().chars();
+    let drive = characters.next()?;
+    if !drive.is_ascii_alphabetic() || characters.next()? != ':' {
+        return None;
+    }
+    if !is_path_separator(characters.next()?) {
+        return None;
+    }
+    Some(drive.to_ascii_uppercase())
+}
+
+fn is_windows_drive_path(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 fn workspace_prefix_len(value: &str, prefix: &str) -> Option<usize> {
@@ -983,10 +1039,6 @@ fn normalize_path_char(character: char) -> char {
     } else {
         character.to_ascii_lowercase()
     }
-}
-
-fn path_ends_with_separator(value: &str) -> bool {
-    value.chars().next_back().is_some_and(is_path_separator)
 }
 
 fn is_path_separator(character: char) -> bool {
@@ -1672,6 +1724,68 @@ mod tests {
 
         fs::remove_dir_all(local).ok();
         fs::remove_dir_all(remote).ok();
+    }
+
+    #[test]
+    fn apply_keeps_foreign_absolute_paths_when_defaults_are_equal() {
+        let remote = temp_root("remote-foreign-workspace-path");
+        let local = temp_root("local-foreign-workspace-path");
+        let default = r"E:\OneDrive\WorkBuddy";
+        let foreign_session = r"D:\WorkSpace\fanruan\fine-passport\fine-passport-springboot";
+
+        write_app_config(&remote, default);
+        create_sync_database(&remote, Some(foreign_session), None);
+        let package = remote.join("remote.zip");
+        build_sync_package(&remote, &package).expect("build remote package");
+
+        write_app_config(&local, default);
+        create_sync_database(&local, None, None);
+        apply_sync_package(&local, &package, SyncStrategy::SmartMerge).expect("apply package");
+
+        let connection = Connection::open(local.join("workbuddy.db")).expect("open local db");
+        let actual: String = connection
+            .query_row(
+                "SELECT cwd FROM sessions WHERE id = 'session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read session cwd");
+        assert_eq!(actual, foreign_session);
+
+        fs::remove_dir_all(local).ok();
+        fs::remove_dir_all(remote).ok();
+    }
+
+    #[test]
+    fn workspace_rewrite_keeps_local_and_relative_paths_unchanged() {
+        let rewrite = workspace_path_rewrite(
+            Some(r"E:\OneDrive\WorkBuddy"),
+            Some(r"E:\OneDrive\WorkBuddy"),
+        )
+        .expect("rewrite");
+
+        assert_eq!(
+            rewrite_workspace_path(r"E:\OneDrive\WorkBuddy\Project", &rewrite),
+            None
+        );
+        assert_eq!(rewrite_workspace_path(r"relative\Project", &rewrite), None);
+
+        let cross_device = workspace_path_rewrite(
+            Some(r"D:\OneDrive\WorkBuddy"),
+            Some(r"E:\OneDrive\WorkBuddy"),
+        )
+        .expect("cross-device rewrite");
+        assert_eq!(
+            rewrite_workspace_path(
+                r"D:\WorkSpace\fanruan\fine-passport\fine-passport-springboot",
+                &cross_device,
+            ),
+            Some(r"E:\WorkSpace\fanruan\fine-passport\fine-passport-springboot".to_string())
+        );
+        assert_eq!(
+            rewrite_workspace_path(r"C:\Users\PC\project", &cross_device),
+            None
+        );
     }
 
     #[test]

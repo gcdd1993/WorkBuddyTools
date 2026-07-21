@@ -147,6 +147,15 @@ npm run build
 npm run tauri build -- --no-bundle
 ```
 
+## 应用自动更新
+
+应用启动后会自动检查 GitHub Releases，发现新版本时在顶部显示更新提示，并可在“应用设置 → 关于与更新”中下载安装。发布 `v*` 标签前，需要在 GitHub 仓库的 Actions Secrets 中配置：
+
+- `TAURI_SIGNING_PRIVATE_KEY`：与 `src-tauri/tauri.conf.json` 中公钥配对的 Tauri updater 私钥内容。
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`：私钥密码；无密码密钥可留空。
+
+发布前必须同步更新 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 和 `VERSION` 中的版本号。推送版本标签后，Release 工作流会生成签名更新包和 `latest.json`。请妥善备份私钥；丢失私钥后，已经安装的旧版本无法验证使用新密钥签名的更新。
+
 ## 技术栈
 
 - Tauri 2
