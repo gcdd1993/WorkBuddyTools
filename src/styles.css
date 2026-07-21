@@ -645,6 +645,51 @@ td {
   color: var(--color-foreground);
 }
 
+.sync-progress {
+  background: var(--color-surface-raised);
+  border-top: 1px solid var(--color-border);
+  display: grid;
+  gap: 8px;
+  min-height: 58px;
+  padding: 12px 18px;
+}
+
+.sync-progress-label {
+  align-items: center;
+  color: var(--color-muted);
+  display: flex;
+  font-size: 12px;
+  gap: 12px;
+  justify-content: space-between;
+  line-height: 1.4;
+}
+
+.sync-progress-label span:first-child {
+  color: var(--color-foreground);
+  font-weight: 700;
+  min-width: 0;
+}
+
+.sync-progress-label span:last-child {
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.sync-progress-track {
+  background: var(--color-surface-soft);
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+}
+
+.sync-progress-track span {
+  background: var(--color-primary);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  transition: width 180ms ease;
+}
+
 .sync-actions {
   display: flex;
   flex-wrap: wrap;
@@ -755,6 +800,33 @@ td {
 .primary-button:hover:not(:disabled) {
   background: var(--color-primary-hover);
   border-color: var(--color-primary-hover);
+}
+
+.sync-run-button.syncing,
+.sync-run-button.syncing:disabled {
+  animation: sync-button-shimmer 1400ms ease-in-out infinite;
+  background: linear-gradient(
+    110deg,
+    var(--color-primary) 0%,
+    var(--color-primary) 34%,
+    var(--color-primary-hover) 50%,
+    var(--color-primary) 66%,
+    var(--color-primary) 100%
+  );
+  background-size: 220% 100%;
+  border-color: var(--color-primary);
+  cursor: wait;
+  opacity: 1;
+}
+
+@keyframes sync-button-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: -100% 0;
+  }
 }
 
 .secondary-button {

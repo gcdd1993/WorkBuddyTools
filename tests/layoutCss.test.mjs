@@ -69,3 +69,21 @@ test("keeps provider model rows aligned while allowing badges to wrap visibly", 
   assertDeclaration(".model-choice-meta", "flex-wrap: wrap");
   assertDeclaration(".model-choice-meta", "overflow: visible");
 });
+
+test("renders WebDAV sync progress with stable dimensions and accessible semantics", () => {
+  assert.match(main, /className="sync-progress"/);
+  assert.match(main, /role="progressbar"/);
+  assert.match(main, /aria-valuenow=\{percent\}/);
+  assertDeclaration(".sync-progress", "min-height: 58px");
+  assertDeclaration(".sync-progress-track", "height: 8px");
+  assertDeclaration(".sync-progress-track", "overflow: hidden");
+  assertDeclaration(".sync-progress-track span", "transition: width 180ms ease");
+});
+
+test("animates the primary sync action without changing its layout", () => {
+  assert.match(main, /sync-run-button\$\{loading === "webdav_run_sync" \? " syncing" : ""\}/);
+  assert.match(main, /aria-busy=\{loading === "webdav_run_sync"\}/);
+  assertDeclaration(".sync-run-button.syncing,\n.sync-run-button.syncing:disabled", "animation: sync-button-shimmer 1400ms ease-in-out infinite");
+  assertDeclaration(".sync-run-button.syncing,\n.sync-run-button.syncing:disabled", "cursor: wait");
+  assertDeclaration(".sync-run-button.syncing,\n.sync-run-button.syncing:disabled", "opacity: 1");
+});

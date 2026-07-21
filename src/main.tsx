@@ -100,6 +100,11 @@ type WebDavSyncResult = {
   message: string;
 };
 
+type WebDavSyncProgress = {
+  percent: number;
+  stage: string;
+};
+
 type WorkBuddyModel = {
   id?: string;
   name?: string;
@@ -205,6 +210,7 @@ function App() {
   });
   const [syncStrategy, setSyncStrategy] = useState<SyncStrategy>("smartMerge");
   const [syncLoading, setSyncLoading] = useState("");
+  const [syncProgress, setSyncProgress] = useState<WebDavSyncProgress | null>(null);
   const [remoteInfo, setRemoteInfo] = useState<WebDavRemoteInfo | null>(null);
   const [syncResult, setSyncResult] = useState<WebDavSyncResult | null>(null);
   const [sessions, setSessions] = useState<WorkBuddySessionSummary[]>([]);
@@ -693,10 +699,22 @@ function App() {
   }
 
   async function runWebDavAction(command: string, strategy?: SyncStrategy) {
+    const tracksProgress = [
+      "webdav_run_sync",
+      "webdav_upload_sync",
+      "webdav_download_sync",
+    ].includes(command);
     setSyncLoading(command);
+    setSyncProgress(tracksProgress ? { percent: 0, stage: "准备执行同步" } : null);
     setError("");
     setMessage("");
+    let unlisten: (() => void) | undefined;
     try {
+      if (tracksProgress) {
+        unlisten = await listen<WebDavSyncProgress>("webdav-sync-progress", (event) => {
+          setSyncProgress(event.payload);
+        });
+      }
       if (command === "webdav_test_connection") {
         await invokeCommand(command, { settings: syncSettings });
         setMessage("WebDAV 连接成功");
@@ -717,7 +735,9 @@ function App() {
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {
+      unlisten?.();
       setSyncLoading("");
+      setSyncProgress(null);
     }
   }
 
@@ -788,6 +808,7 @@ function App() {
           saving={savingSettings}
           strategy={syncStrategy}
           syncLoading={syncLoading}
+          syncProgress={syncProgress}
           remoteInfo={remoteInfo}
           syncResult={syncResult}
           appVersion={appVersion}
@@ -896,9 +917,9 @@ function App() {
   );
 }
 
-function SettingsPage({ settings, savedSettings, saving, strategy, syncLoading, remoteInfo, syncResult, appVersion, updateInfo, checkingUpdate, installingUpdate, updateProgress, onChange, onCancel, onSave, onStrategyChange, onSyncAction, onCheckUpdate, onInstallUpdate }: {
+function SettingsPage({ settings, savedSettings, saving, strategy, syncLoading, syncProgress, remoteInfo, syncResult, appVersion, updateInfo, checkingUpdate, installingUpdate, updateProgress, onChange, onCancel, onSave, onStrategyChange, onSyncAction, onCheckUpdate, onInstallUpdate }: {
   settings: AppSettings | null; savedSettings: AppSettings | null; saving: boolean;
-  strategy: SyncStrategy; syncLoading: string; remoteInfo: WebDavRemoteInfo | null; syncResult: WebDavSyncResult | null;
+  strategy: SyncStrategy; syncLoading: string; syncProgress: WebDavSyncProgress | null; remoteInfo: WebDavRemoteInfo | null; syncResult: WebDavSyncResult | null;
   appVersion: string; updateInfo: AppUpdateInfo | null; checkingUpdate: boolean; installingUpdate: boolean; updateProgress: UpdateDownloadProgress | null;
   onChange: (settings: AppSettings) => void;
   onCancel: () => void; onSave: (event: FormEvent) => void;
@@ -929,6 +950,7 @@ function SettingsPage({ settings, savedSettings, saving, strategy, syncLoading, 
             settings={savedSettings?.webdav ?? settings.webdav}
             strategy={strategy}
             loading={syncLoading}
+            progress={syncProgress}
             saving={saving}
             remoteInfo={remoteInfo}
             result={syncResult}
@@ -1097,6 +1119,29 @@ function UpdateProgress({ progress }: { progress: UpdateDownloadProgress }) {
   );
 }
 
+function WebDavProgress({ progress }: { progress: WebDavSyncProgress }) {
+  const percent = Math.max(0, Math.min(100, Math.round(progress.percent)));
+  return (
+    <div className="sync-progress" aria-live="polite" aria-atomic="true">
+      <div className="sync-progress-label">
+        <span>{progress.stage}</span>
+        <span>{percent}%</span>
+      </div>
+      <div
+        className="sync-progress-track"
+        role="progressbar"
+        aria-label="WebDAV 同步进度"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        aria-valuetext={`${progress.stage}，${percent}%`}
+      >
+        <span style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function SessionEditDialog({
   session,
   form,
@@ -1202,10 +1247,11 @@ function formatSessionTime(value: number | null) {
   return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
-function SyncSettingsSection({ settings, strategy, loading, saving, remoteInfo, result, hasUnsavedChanges, onCancel, onStrategyChange, onAction }: {
+function SyncSettingsSection({ settings, strategy, loading, progress, saving, remoteInfo, result, hasUnsavedChanges, onCancel, onStrategyChange, onAction }: {
   settings: WebDavSyncSettings;
   strategy: SyncStrategy;
   loading: string;
+  progress: WebDavSyncProgress | null;
   saving: boolean;
   remoteInfo: WebDavRemoteInfo | null;
   result: WebDavSyncResult | null;
@@ -1227,12 +1273,13 @@ function SyncSettingsSection({ settings, strategy, loading, saving, remoteInfo, 
             <label><span className="field-label">同步策略</span><select value={strategy} onChange={(e) => onStrategyChange(e.target.value as SyncStrategy)}><option value="smartMerge">智能合并</option><option value="remoteOverwriteLocal">远端覆盖本机</option><option value="localOverwriteRemote">本机覆盖远端</option></select></label>
           </div>
           <div className={`warning-box${settings.passphrase.trim() ? "" : " warning-box-danger"}`}>同步包包含会话、用户记忆、会话附件、个性化配置、models.json 与 model-providers.json（可能包含 API Key）；智能合并时会保留本机的模型和供应商配置。填写同步加密密码时上传为 workbuddy-sync.zip.enc；留空时将以明文 workbuddy-sync.zip 上传，上述内容将以明文存储在 WebDAV，存在安全风险。</div>
+          {progress ? <WebDavProgress progress={progress} /> : null}
           <div className="sync-actions">
             <button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>取消</button>
             <button type="submit" className="primary-button" disabled={saving}>保存</button>
             <button type="button" className="secondary-button" disabled={busy || !configured || hasUnsavedChanges} onClick={() => onAction("webdav_test_connection")}>{loading === "webdav_test_connection" ? <Loader2 className="spin" size={16} /> : <Cloud size={16} />}测试连接</button>
             <button type="button" className="secondary-button" disabled={busy || !configured || hasUnsavedChanges} onClick={() => onAction("webdav_fetch_remote_info")}><RefreshCcw size={16} />查看远端</button>
-            <button type="button" className="primary-button" disabled={busy || !configured || hasUnsavedChanges} onClick={() => onAction("webdav_run_sync")}>{loading === "webdav_run_sync" ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}执行同步</button>
+            <button type="button" className={`primary-button sync-run-button${loading === "webdav_run_sync" ? " syncing" : ""}`} aria-busy={loading === "webdav_run_sync"} disabled={busy || !configured || hasUnsavedChanges} onClick={() => onAction("webdav_run_sync")}>{loading === "webdav_run_sync" ? <Loader2 className="spin" size={16} /> : <RefreshCcw size={16} />}{loading === "webdav_run_sync" ? "同步中" : "执行同步"}</button>
             <button type="button" className="secondary-button" disabled={busy || !configured || hasUnsavedChanges} onClick={() => onAction("webdav_upload_sync", "localOverwriteRemote")}><Upload size={16} />上传本机覆盖远端</button>
             <button type="button" className="secondary-button" disabled={busy || !configured || hasUnsavedChanges} onClick={() => onAction("webdav_download_sync", "remoteOverwriteLocal")}><Download size={16} />下载远端覆盖本机</button>
           </div>

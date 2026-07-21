@@ -9,6 +9,7 @@ use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs, time::Duration};
+use tauri::{AppHandle, Emitter};
 use tempfile::tempdir;
 use url::Url;
 
@@ -66,6 +67,25 @@ pub struct WebDavSyncResult {
     pub backup_dir: Option<String>,
     pub conflicts: Vec<String>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WebDavSyncProgress {
+    percent: u8,
+    stage: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ProgressRange {
+    start: u8,
+    end: u8,
+}
+
+impl ProgressRange {
+    fn at(self, percent: u8) -> u8 {
+        self.start + ((self.end - self.start) as u16 * percent.min(100) as u16 / 100) as u8
+    }
 }
 
 impl WebDavSyncSettings {
@@ -135,24 +155,42 @@ pub async fn webdav_fetch_remote_info(
 
 #[tauri::command]
 pub async fn webdav_upload_sync(
+    app: AppHandle,
     settings: WebDavSyncSettings,
     strategy: SyncStrategy,
 ) -> Result<WebDavSyncResult, String> {
     settings.validate()?;
-    publish_local_snapshot(&settings, strategy).await
+    emit_sync_progress(&app, 3, "准备本机同步数据");
+    let result = publish_local_snapshot(
+        &app,
+        &settings,
+        strategy,
+        ProgressRange { start: 5, end: 96 },
+    )
+    .await?;
+    emit_sync_progress(&app, 100, "同步完成");
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn webdav_download_sync(
+    app: AppHandle,
     settings: WebDavSyncSettings,
     strategy: SyncStrategy,
 ) -> Result<WebDavSyncResult, String> {
     settings.validate()?;
     if strategy == SyncStrategy::LocalOverwriteRemote {
-        return publish_local_snapshot(&settings, strategy).await;
+        return webdav_upload_sync(app, settings, strategy).await;
     }
-    let apply = download_and_apply_snapshot(&settings, strategy).await?;
-    Ok(WebDavSyncResult {
+    emit_sync_progress(&app, 3, "准备读取远端同步数据");
+    let apply = download_and_apply_snapshot(
+        &app,
+        &settings,
+        strategy,
+        ProgressRange { start: 5, end: 96 },
+    )
+    .await?;
+    let result = WebDavSyncResult {
         status: "downloaded".to_string(),
         strategy,
         generation: None,
@@ -170,25 +208,44 @@ pub async fn webdav_download_sync(
             }
             SyncStrategy::LocalOverwriteRemote => unreachable!(),
         },
-    })
+    };
+    emit_sync_progress(&app, 100, "同步完成");
+    Ok(result)
 }
 
 #[tauri::command]
 pub async fn webdav_run_sync(
+    app: AppHandle,
     settings: WebDavSyncSettings,
     strategy: SyncStrategy,
 ) -> Result<WebDavSyncResult, String> {
     settings.validate()?;
+    emit_sync_progress(&app, 2, "检查同步策略");
     match strategy {
-        SyncStrategy::LocalOverwriteRemote => publish_local_snapshot(&settings, strategy).await,
-        SyncStrategy::RemoteOverwriteLocal => webdav_download_sync(settings, strategy).await,
+        SyncStrategy::LocalOverwriteRemote => webdav_upload_sync(app, settings, strategy).await,
+        SyncStrategy::RemoteOverwriteLocal => webdav_download_sync(app, settings, strategy).await,
         SyncStrategy::SmartMerge => {
+            emit_sync_progress(&app, 5, "检查远端同步包");
             let apply = if fetch_latest_manifest(&settings).await?.is_some() {
-                Some(download_and_apply_snapshot(&settings, strategy).await?)
+                Some(
+                    download_and_apply_snapshot(
+                        &app,
+                        &settings,
+                        strategy,
+                        ProgressRange { start: 8, end: 55 },
+                    )
+                    .await?,
+                )
             } else {
                 None
             };
-            let mut result = publish_local_snapshot(&settings, strategy).await?;
+            let mut result = publish_local_snapshot(
+                &app,
+                &settings,
+                strategy,
+                ProgressRange { start: 56, end: 97 },
+            )
+            .await?;
             if let Some(apply) = apply {
                 result.backup_dir = apply
                     .backup_dir
@@ -207,22 +264,28 @@ pub async fn webdav_run_sync(
                     )
                 };
             }
+            emit_sync_progress(&app, 100, "同步完成");
             Ok(result)
         }
     }
 }
 
 async fn publish_local_snapshot(
+    app: &AppHandle,
     settings: &WebDavSyncSettings,
     strategy: SyncStrategy,
+    progress: ProgressRange,
 ) -> Result<WebDavSyncResult, String> {
+    emit_sync_progress(app, progress.at(4), "收集本机同步数据");
     let workbuddy_dir = workbuddy_dir()?;
     let tmp = tempdir().map_err(|err| format!("创建同步临时目录失败：{err}"))?;
     let plain_zip = tmp.path().join(PLAIN_ZIP_NAME);
     let encrypted_zip = tmp.path().join(ENCRYPTED_ZIP_NAME);
     build_sync_package(&workbuddy_dir, &plain_zip)?;
+    emit_sync_progress(app, progress.at(38), "已生成本机同步包");
     let encrypted = !settings.passphrase.trim().is_empty();
     let (package_name, package_bytes) = if encrypted {
+        emit_sync_progress(app, progress.at(44), "加密同步包");
         encrypt_package(&plain_zip, &encrypted_zip, &settings.passphrase)?;
         (
             ENCRYPTED_ZIP_NAME,
@@ -244,7 +307,9 @@ async fn publish_local_snapshot(
     let manifest_path = remote_generation_manifest_path(settings, &generation);
     let latest_path = remote_latest_manifest_path(settings);
 
+    emit_sync_progress(app, progress.at(58), "准备远端同步目录");
     ensure_remote_directories(settings, &generation).await?;
+    emit_sync_progress(app, progress.at(68), "上传同步包");
     put_bytes(
         settings,
         &path_segments(&package_path),
@@ -253,6 +318,7 @@ async fn publish_local_snapshot(
     )
     .await?;
 
+    emit_sync_progress(app, progress.at(88), "更新远端同步清单");
     let public_manifest = WebDavPublicManifest {
         schema_version: 1,
         generation: generation.clone(),
@@ -271,6 +337,7 @@ async fn publish_local_snapshot(
         "application/json",
     )
     .await?;
+
     put_bytes(
         settings,
         &path_segments(&latest_path),
@@ -278,6 +345,7 @@ async fn publish_local_snapshot(
         "application/json",
     )
     .await?;
+    emit_sync_progress(app, progress.end, "远端快照已更新");
 
     Ok(WebDavSyncResult {
         status: "uploaded".to_string(),
@@ -295,13 +363,17 @@ async fn publish_local_snapshot(
 }
 
 async fn download_and_apply_snapshot(
+    app: &AppHandle,
     settings: &WebDavSyncSettings,
     strategy: SyncStrategy,
+    progress: ProgressRange,
 ) -> Result<SyncApplyResult, String> {
+    emit_sync_progress(app, progress.at(4), "读取远端同步清单");
     let manifest = fetch_latest_manifest(settings)
         .await?
         .ok_or_else(|| "远端没有可下载的 WorkBuddy 同步包".to_string())?;
     validate_remote_package_path(settings, &manifest.encrypted_package_path)?;
+    emit_sync_progress(app, progress.at(18), "下载远端同步包");
     let package_bytes = get_bytes(
         settings,
         &path_segments(&manifest.encrypted_package_path),
@@ -309,6 +381,7 @@ async fn download_and_apply_snapshot(
     )
     .await?
     .ok_or_else(|| "远端同步包不存在".to_string())?;
+    emit_sync_progress(app, progress.at(52), "校验远端同步包");
     let actual_hash = sha256_hex(&package_bytes);
     if actual_hash != manifest.encrypted_package_sha256 {
         return Err(format!(
@@ -337,12 +410,26 @@ async fn download_and_apply_snapshot(
         }
         fs::write(&encrypted_path, package_bytes)
             .map_err(|err| format!("写入临时加密包失败：{err}"))?;
+        emit_sync_progress(app, progress.at(64), "解密远端同步包");
         decrypt_package(&encrypted_path, &plain_zip, &settings.passphrase)?;
     } else {
         fs::write(&plain_zip, package_bytes)
             .map_err(|err| format!("写入临时明文 ZIP 失败：{err}"))?;
     }
-    apply_sync_package(&workbuddy_dir()?, &plain_zip, strategy)
+    emit_sync_progress(app, progress.at(78), "合并本机数据");
+    let result = apply_sync_package(&workbuddy_dir()?, &plain_zip, strategy)?;
+    emit_sync_progress(app, progress.end, "远端数据已应用");
+    Ok(result)
+}
+
+fn emit_sync_progress(app: &AppHandle, percent: u8, stage: &str) {
+    let _ = app.emit(
+        "webdav-sync-progress",
+        WebDavSyncProgress {
+            percent: percent.min(100),
+            stage: stage.to_string(),
+        },
+    );
 }
 
 async fn fetch_latest_manifest(
@@ -614,6 +701,16 @@ mod tests {
             path,
             "WorkBuddySync/v1/generations/000001/workbuddy-sync.zip.enc"
         );
+    }
+
+    #[test]
+    fn progress_range_maps_stage_percentages_into_command_range() {
+        let range = ProgressRange { start: 20, end: 60 };
+
+        assert_eq!(range.at(0), 20);
+        assert_eq!(range.at(50), 40);
+        assert_eq!(range.at(100), 60);
+        assert_eq!(range.at(150), 60);
     }
 
     #[test]
