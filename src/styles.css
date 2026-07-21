@@ -904,10 +904,12 @@ td {
 }
 
 .provider-list {
+  align-content: start;
   border-top: 1px solid var(--color-border);
   display: grid;
   flex: 1;
   gap: 0;
+  grid-auto-rows: 84px;
   min-height: 0;
   overflow: auto;
 }
@@ -918,6 +920,8 @@ td {
   display: grid;
   gap: 8px;
   grid-template-columns: minmax(0, 1fr) 44px 44px;
+  height: 84px;
+  min-height: 84px;
   padding: 10px;
 }
 

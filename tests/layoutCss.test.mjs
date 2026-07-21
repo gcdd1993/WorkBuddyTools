@@ -42,6 +42,10 @@ test("keeps the app shell pinned to the viewport and delegates overflow inward",
 test("keeps provider list and dialogs in dedicated interaction regions", () => {
   assertDeclaration(".provider-list", "flex: 1");
   assertDeclaration(".provider-list", "overflow: auto");
+  assertDeclaration(".provider-list", "align-content: start");
+  assertDeclaration(".provider-list", "grid-auto-rows: 84px");
+  assertDeclaration(".provider-row", "height: 84px");
+  assertDeclaration(".provider-row", "min-height: 84px");
   assertDeclaration(".modal-backdrop", "position: fixed");
   assertDeclaration(".modal-backdrop", "inset: 0");
   assertDeclaration(".provider-dialog", "max-width: 520px");

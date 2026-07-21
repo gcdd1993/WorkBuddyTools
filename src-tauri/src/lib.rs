@@ -185,15 +185,28 @@ fn save_provider(input: ProviderInput) -> Result<Vec<Provider>, String> {
 
 #[tauri::command]
 fn delete_provider(provider_id: String) -> Result<Vec<Provider>, String> {
+    let provider_id = required_trimmed(provider_id, "供应商 ID")?;
     let mut providers = read_providers()?;
-    let original_len = providers.len();
-    providers.retain(|provider| provider.id != provider_id);
-
-    if providers.len() == original_len {
+    let Some(provider) = providers
+        .iter()
+        .find(|provider| provider.id == provider_id)
+        .cloned()
+    else {
         return Err("未找到要删除的供应商".to_string());
+    };
+
+    providers.retain(|item| item.id != provider_id);
+
+    let models = read_workbuddy_models()?;
+    let mut retained_models = Vec::with_capacity(models.len());
+    for model in models {
+        if !model_belongs_to_provider(&model, &provider)? {
+            retained_models.push(model);
+        }
     }
 
     write_providers(&providers)?;
+    write_workbuddy_models(&retained_models)?;
     Ok(providers)
 }
 
@@ -753,6 +766,7 @@ fn workbuddy_model_from_provider(
     let mut model = json!({
         "id": fetched.id,
         "name": format!("{}-{}", provider.name, fetched.id),
+        "providerId": provider.id,
         "vendor": "Custom",
         "url": chat_completions_endpoint(&provider.base_url)?,
         "apiKey": provider.api_key,
@@ -792,6 +806,24 @@ fn remove_model_by_id(models: &mut Vec<Value>, model_id: &str) -> usize {
     let original_len = models.len();
     models.retain(|model| model.get("id").and_then(Value::as_str) != Some(model_id));
     original_len - models.len()
+}
+
+fn model_belongs_to_provider(model: &Value, provider: &Provider) -> Result<bool, String> {
+    if model.get("providerId").and_then(Value::as_str) == Some(provider.id.as_str()) {
+        return Ok(true);
+    }
+
+    // 兼容 providerId 尚未写入的历史模型配置。
+    let endpoint = chat_completions_endpoint(&provider.base_url)?;
+    let same_endpoint = model.get("url").and_then(Value::as_str) == Some(endpoint.as_str());
+    let same_key = model.get("apiKey").and_then(Value::as_str) == Some(provider.api_key.as_str());
+    let name_prefix = format!("{}-", provider.name);
+    let same_name_prefix = model
+        .get("name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.starts_with(&name_prefix));
+
+    Ok(same_endpoint && same_key && same_name_prefix)
 }
 
 fn format_model_fetch_error(status: StatusCode, body: &str) -> String {
@@ -1021,5 +1053,37 @@ mod tests {
             Some("target-2")
         );
         assert_eq!(models[1].get("name").and_then(Value::as_str), Some("No id"));
+    }
+
+    #[test]
+    fn provider_models_are_identified_by_marker_or_legacy_fields() {
+        let provider = Provider {
+            id: "provider-a".to_string(),
+            name: "Provider A".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: "sk-provider-a".to_string(),
+            created_at: None,
+            updated_at: None,
+            last_fetched_at: None,
+        };
+        let marked = json!({
+            "providerId": "provider-a",
+            "name": "renamed-model",
+            "url": "https://another.example/v1/chat/completions"
+        });
+        let legacy = json!({
+            "name": "Provider A-model-a",
+            "url": "https://api.example.com/v1/chat/completions",
+            "apiKey": "sk-provider-a"
+        });
+        let unrelated = json!({
+            "name": "Provider B-model-a",
+            "url": "https://api.example.com/v1/chat/completions",
+            "apiKey": "sk-provider-a"
+        });
+
+        assert!(model_belongs_to_provider(&marked, &provider).expect("marked model"));
+        assert!(model_belongs_to_provider(&legacy, &provider).expect("legacy model"));
+        assert!(!model_belongs_to_provider(&unrelated, &provider).expect("unrelated model"));
     }
 }

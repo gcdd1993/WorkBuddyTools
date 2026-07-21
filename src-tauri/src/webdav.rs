@@ -162,9 +162,11 @@ pub async fn webdav_download_sync(
             .map(|path| path.to_string_lossy().to_string()),
         conflicts: apply.conflicts,
         message: match strategy {
-            SyncStrategy::SmartMerge => "已从远端下载 ZIP，并与本机配置智能合并".to_string(),
+            SyncStrategy::SmartMerge => {
+                "已从远端下载 ZIP 并智能合并会话、记忆、附件和个性化配置，模型和供应商配置保持本机不变".to_string()
+            }
             SyncStrategy::RemoteOverwriteLocal => {
-                "已使用远端 ZIP 覆盖本机会话和模型配置".to_string()
+                "已应用远端 ZIP，并合并记忆、附件和会话产物索引".to_string()
             }
             SyncStrategy::LocalOverwriteRemote => unreachable!(),
         },
@@ -285,9 +287,9 @@ async fn publish_local_snapshot(
         backup_dir: None,
         conflicts: Vec::new(),
         message: if encrypted {
-            "已打包、加密并上传 WorkBuddy 会话和模型配置 ZIP".to_string()
+            "已打包、加密并上传 WorkBuddy 会话、记忆、附件和配置 ZIP".to_string()
         } else {
-            "已打包并以明文 ZIP 上传 WorkBuddy 会话和模型配置".to_string()
+            "已打包并以明文 ZIP 上传 WorkBuddy 会话、记忆、附件和配置".to_string()
         },
     })
 }

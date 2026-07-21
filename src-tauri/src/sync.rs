@@ -7,10 +7,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
+    time::UNIX_EPOCH,
 };
 use walkdir::WalkDir;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
@@ -25,6 +26,12 @@ const TOMBSTONES_PATH: &str = "workbuddy-sync/sessions/tombstones.jsonl";
 const MODELS_ARCHIVE_PATH: &str = "workbuddy-sync/models/models.json";
 const PROVIDERS_ARCHIVE_PATH: &str = "workbuddy-sync/models/model-providers.json";
 const SESSION_PROJECTS_PREFIX: &str = "workbuddy-sync/sessions/projects/";
+const SESSION_BLOBS_PREFIX: &str = "workbuddy-sync/sessions/blobs/";
+const ARTIFACT_INDEX_PREFIX: &str = "workbuddy-sync/sessions/artifact-index/";
+const PROFILE_PREFIX: &str = "workbuddy-sync/profile/";
+const PROFILE_MEMORY_PREFIX: &str = "workbuddy-sync/profile/memory/";
+const PORTABLE_APP_CONFIG_PATH: &str = "workbuddy-sync/preferences/app-config.json";
+const PROFILE_FILES: [&str; 4] = ["MEMORY.md", "USER.md", "SOUL.md", "IDENTITY.md"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -85,6 +92,24 @@ struct SessionTombstone {
 struct SessionTombstoneExport {
     schema_version: u32,
     tombstones: Vec<SessionTombstone>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PortableAppConfigExport {
+    schema_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    modified_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    disable_agent_teams: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    personalization: Option<Value>,
+}
+
+#[derive(Debug)]
+struct SessionAssetReferences {
+    content_hashes: HashSet<String>,
+    session_ids: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -189,7 +214,11 @@ pub fn apply_sync_package(
     if strategy == SyncStrategy::RemoteOverwriteLocal {
         remove_stale_session_files(workbuddy_dir, &entries)?;
     }
-    let conflicts = apply_session_files(workbuddy_dir, &entries, strategy)?;
+    let mut conflicts = apply_session_files(workbuddy_dir, &entries, strategy)?;
+    apply_profile_files(workbuddy_dir, &entries)?;
+    apply_session_blobs(workbuddy_dir, &entries, &mut conflicts)?;
+    apply_artifact_indexes(workbuddy_dir, &entries)?;
+    apply_portable_app_config(workbuddy_dir, &entries, strategy)?;
     apply_session_metadata(workbuddy_dir, &entries, strategy)?;
 
     Ok(SyncApplyResult {
@@ -242,6 +271,16 @@ pub fn create_sync_backup(workbuddy_dir: &Path) -> Result<PathBuf, String> {
             fs::copy(&source, backup_dir.join(name))
                 .map_err(|err| format!("备份 {name} 失败：{err}"))?;
         }
+    }
+
+    let app_config = workbuddy_dir.join("app").join("app-config.json");
+    if app_config.exists() {
+        let target = backup_dir.join("app").join("app-config.json");
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|err| format!("创建应用配置备份目录失败：{err}"))?;
+        }
+        fs::copy(&app_config, &target)
+            .map_err(|err| format!("备份 app-config.json 失败：{err}"))?;
     }
 
     let database = workbuddy_dir.join("workbuddy.db");
@@ -306,32 +345,6 @@ pub(crate) fn validate_archive_path(name: &str) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-pub(crate) fn merge_provider_values(
-    local: &Value,
-    remote: &Value,
-    strategy: SyncStrategy,
-) -> Result<Value, String> {
-    merge_json_arrays_by_id(
-        local,
-        remote,
-        strategy,
-        &["apiKey", "api_key", "token", "secret"],
-    )
-}
-
-fn merge_model_values(
-    local: &Value,
-    remote: &Value,
-    strategy: SyncStrategy,
-) -> Result<Value, String> {
-    merge_json_arrays_by_id(
-        local,
-        remote,
-        strategy,
-        &["apiKey", "api_key", "token", "secret"],
-    )
-}
-
 fn collect_sync_entries(workbuddy_dir: &Path) -> Result<Vec<PackageEntry>, String> {
     let mut entries = Vec::new();
     let projects_dir = workbuddy_dir.join("projects");
@@ -370,6 +383,9 @@ fn collect_sync_entries(workbuddy_dir: &Path) -> Result<Vec<PackageEntry>, Strin
         workbuddy_dir.join("model-providers.json"),
         PROVIDERS_ARCHIVE_PATH,
     )?;
+    collect_profile_entries(workbuddy_dir, &mut entries)?;
+    collect_session_asset_entries(workbuddy_dir, &mut entries)?;
+    collect_portable_app_config(workbuddy_dir, &mut entries)?;
     let (session_export, tombstones) = export_session_metadata(workbuddy_dir)?;
     entries.push(PackageEntry {
         path: SESSIONS_EXPORT_PATH.to_string(),
@@ -380,6 +396,216 @@ fn collect_sync_entries(workbuddy_dir: &Path) -> Result<Vec<PackageEntry>, Strin
         bytes: tombstones,
     });
     Ok(entries)
+}
+
+fn collect_profile_entries(
+    workbuddy_dir: &Path,
+    entries: &mut Vec<PackageEntry>,
+) -> Result<(), String> {
+    for name in PROFILE_FILES {
+        push_optional_file(
+            entries,
+            workbuddy_dir.join(name),
+            &format!("{PROFILE_PREFIX}{name}"),
+        )?;
+    }
+
+    let memory_dir = workbuddy_dir.join("memory");
+    if !memory_dir.exists() {
+        return Ok(());
+    }
+    for entry in WalkDir::new(&memory_dir)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("md") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(&memory_dir)
+            .map_err(|err| format!("计算记忆文件相对路径失败：{err}"))?;
+        entries.push(PackageEntry {
+            path: format!("{PROFILE_MEMORY_PREFIX}{}", path_to_archive_path(relative)?),
+            bytes: fs::read(path).map_err(|err| format!("读取记忆文件失败：{err}"))?,
+        });
+    }
+    Ok(())
+}
+
+fn collect_session_asset_entries(
+    workbuddy_dir: &Path,
+    entries: &mut Vec<PackageEntry>,
+) -> Result<(), String> {
+    let references = collect_session_asset_references(workbuddy_dir)?;
+    let blobs_dir = workbuddy_dir.join("blobs");
+    if blobs_dir.exists() {
+        for entry in WalkDir::new(&blobs_dir)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+        {
+            let path = entry.path();
+            let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !references
+                .content_hashes
+                .contains(&stem.to_ascii_lowercase())
+            {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(&blobs_dir)
+                .map_err(|err| format!("计算 Blob 相对路径失败：{err}"))?;
+            entries.push(PackageEntry {
+                path: format!("{SESSION_BLOBS_PREFIX}{}", path_to_archive_path(relative)?),
+                bytes: fs::read(path).map_err(|err| format!("读取会话 Blob 失败：{err}"))?,
+            });
+        }
+    }
+
+    let artifact_dir = workbuddy_dir.join("artifact-index");
+    if artifact_dir.exists() {
+        for entry in WalkDir::new(&artifact_dir)
+            .min_depth(1)
+            .max_depth(1)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_file())
+        {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let Some(session_id) = path.file_stem().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if !references.session_ids.contains(session_id) {
+                continue;
+            }
+            entries.push(PackageEntry {
+                path: format!("{ARTIFACT_INDEX_PREFIX}{session_id}.json"),
+                bytes: fs::read(path).map_err(|err| format!("读取 artifact-index 失败：{err}"))?,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn collect_session_asset_references(
+    workbuddy_dir: &Path,
+) -> Result<SessionAssetReferences, String> {
+    let mut references = SessionAssetReferences {
+        content_hashes: HashSet::new(),
+        session_ids: HashSet::new(),
+    };
+    let projects_dir = workbuddy_dir.join("projects");
+    if !projects_dir.exists() {
+        return Ok(references);
+    }
+
+    for entry in WalkDir::new(&projects_dir)
+        .into_iter()
+        .filter_entry(|entry| !is_excluded_component(entry.path()))
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file())
+    {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let bytes = fs::read(path).map_err(|err| format!("读取会话附件引用失败：{err}"))?;
+        collect_hex_hashes(&bytes, &mut references.content_hashes);
+        for line in bytes.split(|byte| *byte == b'\n') {
+            if line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            let Ok(value) = serde_json::from_slice::<Value>(line) else {
+                continue;
+            };
+            collect_named_strings(&value, "sessionId", &mut references.session_ids);
+        }
+    }
+    Ok(references)
+}
+
+fn collect_hex_hashes(bytes: &[u8], output: &mut HashSet<String>) {
+    let mut start = 0;
+    while start < bytes.len() {
+        while start < bytes.len() && !bytes[start].is_ascii_hexdigit() {
+            start += 1;
+        }
+        let mut end = start;
+        while end < bytes.len() && bytes[end].is_ascii_hexdigit() {
+            end += 1;
+        }
+        if end.saturating_sub(start) == 64 {
+            output.insert(String::from_utf8_lossy(&bytes[start..end]).to_ascii_lowercase());
+        }
+        start = end.max(start + 1);
+    }
+}
+
+fn collect_named_strings(value: &Value, key: &str, output: &mut HashSet<String>) {
+    match value {
+        Value::Object(object) => {
+            for (name, value) in object {
+                if name == key {
+                    if let Some(text) = value.as_str().filter(|text| !text.trim().is_empty()) {
+                        output.insert(text.to_string());
+                    }
+                }
+                collect_named_strings(value, key, output);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_named_strings(value, key, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_portable_app_config(
+    workbuddy_dir: &Path,
+    entries: &mut Vec<PackageEntry>,
+) -> Result<(), String> {
+    let path = workbuddy_dir.join("app").join("app-config.json");
+    if !path.exists() {
+        return Ok(());
+    }
+    let bytes = fs::read(&path).map_err(|err| format!("读取 WorkBuddy 应用配置失败：{err}"))?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|err| format!("解析 WorkBuddy 应用配置失败：{err}"))?;
+    let export = PortableAppConfigExport {
+        schema_version: 1,
+        modified_at_ms: file_modified_at_ms(&path),
+        disable_agent_teams: value.get("disableAgentTeams").and_then(Value::as_bool),
+        personalization: value.get("personalization").cloned(),
+    };
+    entries.push(PackageEntry {
+        path: PORTABLE_APP_CONFIG_PATH.to_string(),
+        bytes: serde_json::to_vec_pretty(&export)
+            .map_err(|err| format!("序列化便携应用配置失败：{err}"))?,
+    });
+    Ok(())
+}
+
+fn file_modified_at_ms(path: &Path) -> Option<u64> {
+    fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis()
+        .try_into()
+        .ok()
 }
 
 fn export_session_metadata(workbuddy_dir: &Path) -> Result<(Vec<u8>, Vec<u8>), String> {
@@ -624,13 +850,11 @@ fn apply_model_files(
         &workbuddy_dir.join("models.json"),
         entries.get(MODELS_ARCHIVE_PATH),
         strategy,
-        merge_model_values,
     )?;
     apply_json_array_file(
         &workbuddy_dir.join("model-providers.json"),
         entries.get(PROVIDERS_ARCHIVE_PATH),
         strategy,
-        merge_provider_values,
     )
 }
 
@@ -638,23 +862,389 @@ fn apply_json_array_file(
     target: &Path,
     remote_bytes: Option<&Vec<u8>>,
     strategy: SyncStrategy,
-    merge: fn(&Value, &Value, SyncStrategy) -> Result<Value, String>,
 ) -> Result<(), String> {
+    if strategy != SyncStrategy::RemoteOverwriteLocal {
+        return Ok(());
+    }
     let Some(remote_bytes) = remote_bytes else {
         return Ok(());
     };
     let remote_value: Value = serde_json::from_slice(remote_bytes)
         .map_err(|err| format!("解析远端 JSON 配置失败：{err}"))?;
+    write_json_value(target, &remote_value)
+}
 
-    let next = match strategy {
-        SyncStrategy::RemoteOverwriteLocal => remote_value,
-        SyncStrategy::LocalOverwriteRemote => read_json_array_or_empty(target)?,
-        SyncStrategy::SmartMerge => {
-            let local_value = read_json_array_or_empty(target)?;
-            merge(&local_value, &remote_value, strategy)?
+fn apply_profile_files(
+    workbuddy_dir: &Path,
+    entries: &HashMap<String, Vec<u8>>,
+) -> Result<(), String> {
+    let mut archive_paths = entries
+        .keys()
+        .filter(|path| path.starts_with(PROFILE_PREFIX))
+        .cloned()
+        .collect::<Vec<_>>();
+    archive_paths.sort();
+
+    for archive_path in archive_paths {
+        let relative = archive_path
+            .strip_prefix(PROFILE_PREFIX)
+            .ok_or_else(|| "用户记忆同步路径无效".to_string())?;
+        let target = if let Some(memory_relative) = relative.strip_prefix("memory/") {
+            workbuddy_dir.join("memory").join(memory_relative)
+        } else if PROFILE_FILES.contains(&relative) {
+            workbuddy_dir.join(relative)
+        } else {
+            continue;
+        };
+        let remote_bytes = entries
+            .get(&archive_path)
+            .ok_or_else(|| "用户记忆同步条目缺失".to_string())?;
+        let remote = String::from_utf8(remote_bytes.clone())
+            .map_err(|err| format!("远端用户记忆不是 UTF-8：{err}"))?;
+        let next = if target.exists() {
+            let local = fs::read_to_string(&target)
+                .map_err(|err| format!("读取本地用户记忆失败：{err}"))?;
+            merge_markdown(&local, &remote)
+        } else {
+            remote
+        };
+        write_text_if_changed(&target, &next)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct MarkdownSection {
+    heading: Option<String>,
+    lines: Vec<String>,
+}
+
+fn merge_markdown(local: &str, remote: &str) -> String {
+    let local = normalize_newlines(local);
+    let remote = normalize_newlines(remote);
+    if local.trim().is_empty() {
+        return ensure_trailing_newline(&remote);
+    }
+    if remote.trim().is_empty() || local == remote || local.contains(remote.trim()) {
+        return ensure_trailing_newline(&local);
+    }
+    if remote.contains(local.trim()) {
+        return ensure_trailing_newline(&remote);
+    }
+
+    let mut merged = markdown_sections(&local);
+    for remote_section in markdown_sections(&remote) {
+        let matching = merged
+            .iter_mut()
+            .find(|section| section.heading == remote_section.heading);
+        if let Some(local_section) = matching {
+            let existing = local_section
+                .lines
+                .iter()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect::<HashSet<_>>();
+            let additions = remote_section
+                .lines
+                .into_iter()
+                .filter(|line| !line.trim().is_empty() && !existing.contains(line.trim()))
+                .collect::<Vec<_>>();
+            if !additions.is_empty() {
+                if local_section
+                    .lines
+                    .last()
+                    .is_some_and(|line| !line.trim().is_empty())
+                {
+                    local_section.lines.push(String::new());
+                }
+                local_section.lines.extend(additions);
+            }
+        } else {
+            merged.push(remote_section);
         }
+    }
+    let mut output = String::new();
+    for (index, section) in merged.into_iter().enumerate() {
+        if index > 0 && !output.ends_with("\n\n") {
+            if !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push('\n');
+        }
+        if let Some(heading) = section.heading {
+            output.push_str(&heading);
+            output.push('\n');
+        }
+        output.push_str(&section.lines.join("\n"));
+    }
+    ensure_trailing_newline(output.trim_end())
+}
+
+fn markdown_sections(content: &str) -> Vec<MarkdownSection> {
+    let mut sections = vec![MarkdownSection {
+        heading: None,
+        lines: Vec::new(),
+    }];
+    for line in content.lines() {
+        if is_markdown_heading(line) {
+            sections.push(MarkdownSection {
+                heading: Some(line.trim_end().to_string()),
+                lines: Vec::new(),
+            });
+        } else if let Some(section) = sections.last_mut() {
+            section.lines.push(line.to_string());
+        }
+    }
+    sections
+        .into_iter()
+        .filter(|section| {
+            section.heading.is_some() || section.lines.iter().any(|line| !line.trim().is_empty())
+        })
+        .collect()
+}
+
+fn is_markdown_heading(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let hashes = trimmed.bytes().take_while(|byte| *byte == b'#').count();
+    (1..=6).contains(&hashes) && trimmed.as_bytes().get(hashes) == Some(&b' ')
+}
+
+fn normalize_newlines(content: &str) -> String {
+    content.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn ensure_trailing_newline(content: &str) -> String {
+    let mut output = content.to_string();
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output
+}
+
+fn write_text_if_changed(path: &Path, content: &str) -> Result<(), String> {
+    if path.exists()
+        && fs::read_to_string(path).map_err(|err| format!("读取文本文件失败：{err}"))? == content
+    {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("创建文本文件目录失败：{err}"))?;
+    }
+    fs::write(path, content).map_err(|err| format!("写入文本文件失败：{err}"))
+}
+
+fn apply_session_blobs(
+    workbuddy_dir: &Path,
+    entries: &HashMap<String, Vec<u8>>,
+    conflicts: &mut Vec<String>,
+) -> Result<(), String> {
+    for (archive_path, remote_bytes) in entries {
+        let Some(relative) = archive_path.strip_prefix(SESSION_BLOBS_PREFIX) else {
+            continue;
+        };
+        let target = workbuddy_dir.join("blobs").join(relative);
+        if !target.exists() {
+            write_binary_file(&target, remote_bytes)?;
+            continue;
+        }
+        let local_bytes = fs::read(&target).map_err(|err| format!("读取本地 Blob 失败：{err}"))?;
+        if local_bytes == *remote_bytes {
+            continue;
+        }
+        let conflict = binary_conflict_path(&target);
+        write_binary_file(&conflict, remote_bytes)?;
+        conflicts.push(conflict.to_string_lossy().to_string());
+    }
+    Ok(())
+}
+
+fn write_binary_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| format!("创建二进制文件目录失败：{err}"))?;
+    }
+    fs::write(path, bytes).map_err(|err| format!("写入二进制同步文件失败：{err}"))
+}
+
+fn binary_conflict_path(target: &Path) -> PathBuf {
+    let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ");
+    let name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("blob");
+    target.with_file_name(format!("{name}.conflict.{timestamp}"))
+}
+
+fn apply_artifact_indexes(
+    workbuddy_dir: &Path,
+    entries: &HashMap<String, Vec<u8>>,
+) -> Result<(), String> {
+    for (archive_path, remote_bytes) in entries {
+        let Some(relative) = archive_path.strip_prefix(ARTIFACT_INDEX_PREFIX) else {
+            continue;
+        };
+        let target = workbuddy_dir.join("artifact-index").join(relative);
+        let remote: Value = serde_json::from_slice(remote_bytes)
+            .map_err(|err| format!("解析远端 artifact-index 失败：{err}"))?;
+        let next = if target.exists() {
+            let local: Value = serde_json::from_slice(
+                &fs::read(&target).map_err(|err| format!("读取本地 artifact-index 失败：{err}"))?,
+            )
+            .map_err(|err| format!("解析本地 artifact-index 失败：{err}"))?;
+            merge_artifact_index(&local, &remote)?
+        } else {
+            remote
+        };
+        write_json_value(&target, &next)?;
+    }
+    Ok(())
+}
+
+fn merge_artifact_index(local: &Value, remote: &Value) -> Result<Value, String> {
+    let local_object = local
+        .as_object()
+        .ok_or_else(|| "本地 artifact-index 不是对象".to_string())?;
+    let remote_object = remote
+        .as_object()
+        .ok_or_else(|| "远端 artifact-index 不是对象".to_string())?;
+    let mut output = local_object.clone();
+    let mut artifacts = Vec::new();
+    let mut positions = HashMap::<String, usize>::new();
+
+    for artifact in local_object
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        positions.insert(artifact_identity(artifact), artifacts.len());
+        artifacts.push(artifact.clone());
+    }
+    for artifact in remote_object
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let identity = artifact_identity(artifact);
+        if let Some(position) = positions.get(&identity).copied() {
+            if artifact_timestamp(artifact) > artifact_timestamp(&artifacts[position]) {
+                artifacts[position] = artifact.clone();
+            }
+        } else {
+            positions.insert(identity, artifacts.len());
+            artifacts.push(artifact.clone());
+        }
+    }
+
+    output.insert("artifacts".to_string(), Value::Array(artifacts));
+    output.insert(
+        "version".to_string(),
+        Value::from(max_numeric_field(local_object, remote_object, "version")),
+    );
+    output.insert(
+        "lastUpdated".to_string(),
+        Value::from(max_numeric_field(
+            local_object,
+            remote_object,
+            "lastUpdated",
+        )),
+    );
+    Ok(Value::Object(output))
+}
+
+fn artifact_identity(value: &Value) -> String {
+    for field in ["uri", "id"] {
+        if let Some(identity) = value.get(field).and_then(Value::as_str) {
+            return format!("{field}:{identity}");
+        }
+    }
+    let artifact_type = value.get("type").and_then(Value::as_str).unwrap_or("");
+    let name = value.get("name").and_then(Value::as_str).unwrap_or("");
+    let created_at = value.get("createdAt").and_then(Value::as_i64).unwrap_or(0);
+    format!("fallback:{artifact_type}:{name}:{created_at}")
+}
+
+fn artifact_timestamp(value: &Value) -> i64 {
+    value
+        .get("updatedAt")
+        .and_then(Value::as_i64)
+        .or_else(|| value.get("createdAt").and_then(Value::as_i64))
+        .unwrap_or(0)
+}
+
+fn max_numeric_field(
+    local: &serde_json::Map<String, Value>,
+    remote: &serde_json::Map<String, Value>,
+    field: &str,
+) -> i64 {
+    local
+        .get(field)
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(remote.get(field).and_then(Value::as_i64).unwrap_or(0))
+}
+
+fn apply_portable_app_config(
+    workbuddy_dir: &Path,
+    entries: &HashMap<String, Vec<u8>>,
+    strategy: SyncStrategy,
+) -> Result<(), String> {
+    if strategy == SyncStrategy::LocalOverwriteRemote {
+        return Ok(());
+    }
+    let Some(remote_bytes) = entries.get(PORTABLE_APP_CONFIG_PATH) else {
+        return Ok(());
     };
-    write_json_value(target, &next)
+    let remote: PortableAppConfigExport = serde_json::from_slice(remote_bytes)
+        .map_err(|err| format!("解析远端便携应用配置失败：{err}"))?;
+    let target = workbuddy_dir.join("app").join("app-config.json");
+    let local_modified_at = file_modified_at_ms(&target);
+    let mut local = if target.exists() {
+        serde_json::from_slice::<Value>(
+            &fs::read(&target).map_err(|err| format!("读取本地应用配置失败：{err}"))?,
+        )
+        .map_err(|err| format!("解析本地应用配置失败：{err}"))?
+    } else {
+        Value::Object(serde_json::Map::new())
+    };
+    if strategy == SyncStrategy::SmartMerge
+        && has_non_default_portable_app_config(&local)
+        && local_modified_at.is_some()
+        && remote.modified_at_ms.is_some()
+        && local_modified_at >= remote.modified_at_ms
+    {
+        return Ok(());
+    }
+    let object = local
+        .as_object_mut()
+        .ok_or_else(|| "本地应用配置不是对象".to_string())?;
+    if let Some(value) = remote.disable_agent_teams {
+        object.insert("disableAgentTeams".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = remote.personalization {
+        object.insert("personalization".to_string(), value);
+    }
+    write_json_value(&target, &local)
+}
+
+fn has_non_default_portable_app_config(value: &Value) -> bool {
+    if value
+        .get("disableAgentTeams")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    value
+        .get("personalization")
+        .and_then(Value::as_object)
+        .is_some_and(|personalization| {
+            personalization.values().any(|value| match value {
+                Value::String(text) => !text.trim().is_empty(),
+                Value::Null => false,
+                _ => true,
+            })
+        })
 }
 
 fn apply_session_metadata(
@@ -1388,91 +1978,6 @@ fn conflict_path(target: &Path) -> PathBuf {
     target.with_file_name(format!("{stem}.conflict.{timestamp}.jsonl"))
 }
 
-fn merge_json_arrays_by_id(
-    local: &Value,
-    remote: &Value,
-    strategy: SyncStrategy,
-    secret_fields: &[&str],
-) -> Result<Value, String> {
-    if strategy == SyncStrategy::RemoteOverwriteLocal {
-        return Ok(remote.clone());
-    }
-    if strategy == SyncStrategy::LocalOverwriteRemote {
-        return Ok(local.clone());
-    }
-
-    let mut merged = Vec::<Value>::new();
-    let mut indexes = HashMap::<String, usize>::new();
-    for item in local
-        .as_array()
-        .ok_or_else(|| "本地 JSON 配置不是数组".to_string())?
-    {
-        if let Some(id) = value_id(item) {
-            indexes.insert(id, merged.len());
-        }
-        merged.push(item.clone());
-    }
-
-    for remote_item in remote
-        .as_array()
-        .ok_or_else(|| "远端 JSON 配置不是数组".to_string())?
-    {
-        let Some(id) = value_id(remote_item) else {
-            merged.push(remote_item.clone());
-            continue;
-        };
-        if let Some(index) = indexes.get(&id).copied() {
-            let local_item = merged[index].clone();
-            merged[index] =
-                merge_json_object_preserving_secrets(&local_item, remote_item, secret_fields)?;
-        } else {
-            indexes.insert(id, merged.len());
-            merged.push(remote_item.clone());
-        }
-    }
-
-    Ok(Value::Array(merged))
-}
-
-fn merge_json_object_preserving_secrets(
-    local: &Value,
-    remote: &Value,
-    secret_fields: &[&str],
-) -> Result<Value, String> {
-    let mut output = remote
-        .as_object()
-        .cloned()
-        .ok_or_else(|| "远端 JSON 条目不是对象".to_string())?;
-    let local_object = local
-        .as_object()
-        .ok_or_else(|| "本地 JSON 条目不是对象".to_string())?;
-    for field in secret_fields {
-        if let Some(local_value) = local_object.get(*field) {
-            output.insert((*field).to_string(), local_value.clone());
-        }
-    }
-    Ok(Value::Object(output))
-}
-
-fn value_id(value: &Value) -> Option<String> {
-    value
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.trim().is_empty())
-        .map(ToString::to_string)
-}
-
-fn read_json_array_or_empty(path: &Path) -> Result<Value, String> {
-    if !path.exists() {
-        return Ok(Value::Array(Vec::new()));
-    }
-    let content = fs::read_to_string(path).map_err(|err| format!("读取 JSON 配置失败：{err}"))?;
-    if content.trim().is_empty() {
-        return Ok(Value::Array(Vec::new()));
-    }
-    serde_json::from_str(&content).map_err(|err| format!("解析 JSON 配置失败：{err}"))
-}
-
 fn write_json_value(path: &Path, value: &Value) -> Result<(), String> {
     let bytes =
         serde_json::to_vec_pretty(value).map_err(|err| format!("序列化 JSON 配置失败：{err}"))?;
@@ -1571,13 +2076,34 @@ mod tests {
     #[test]
     fn package_includes_sessions_models_providers_and_excludes_runtime_files() {
         let root = temp_root("package");
+        let blob_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         write(
             &root.join("projects/cwd-key/session-1.jsonl"),
-            "{\"type\":\"message\"}\n",
+            &format!(
+                "{{\"type\":\"message\",\"sessionId\":\"session-1\",\"blob_id\":\"{blob_id}\"}}\n"
+            ),
         );
+        write(&root.join(format!("blobs/aa/{blob_id}.png")), "blob");
+        write(
+            &root.join(
+                "blobs/bb/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
+            ),
+            "unreferenced",
+        );
+        write(
+            &root.join("artifact-index/session-1.json"),
+            r#"{"version":1,"lastUpdated":10,"artifacts":[]}"#,
+        );
+        write(&root.join("MEMORY.md"), "# Memory\n");
+        write(&root.join("memory/profile.md"), "# Profile\n");
+        write(&root.join("memory/profile.md.bak"), "backup");
         write(&root.join("sessions/12345.json"), "{\"pid\":12345}");
         write(&root.join("app/session/Cache/blob"), "cache");
         write(&root.join("app/sessions.json"), "[]");
+        write(
+            &root.join("app/app-config.json"),
+            r#"{"defaultWorkspacePath":"D:\\Local","disableAgentTeams":true,"personalization":{"toneStyle":"concise","customPrompt":"hello"}}"#,
+        );
         write(
             &root.join("models.json"),
             r#"[{"id":"model-a","apiKey":"sk-model"}]"#,
@@ -1599,6 +2125,13 @@ mod tests {
         assert!(paths.contains(&"workbuddy-sync/models/models.json"));
         assert!(paths.contains(&"workbuddy-sync/models/model-providers.json"));
         assert!(paths.contains(&"workbuddy-sync/sessions/metadata/sessions.export.jsonl"));
+        assert!(paths.contains(&"workbuddy-sync/profile/MEMORY.md"));
+        assert!(paths.contains(&"workbuddy-sync/profile/memory/profile.md"));
+        assert!(paths.contains(&"workbuddy-sync/sessions/artifact-index/session-1.json"));
+        assert!(paths.contains(&format!("workbuddy-sync/sessions/blobs/aa/{blob_id}.png").as_str()));
+        assert!(paths.contains(&PORTABLE_APP_CONFIG_PATH));
+        assert!(!paths.iter().any(|path| path.ends_with("profile.md.bak")));
+        assert!(!paths.iter().any(|path| path.contains("bbbbbbbbbbbbbbbb")));
         assert!(!paths
             .iter()
             .any(|path| path.contains("sessions/12345.json")));
@@ -1606,6 +2139,136 @@ mod tests {
         assert!(!paths.iter().any(|path| path.ends_with("app/sessions.json")));
 
         fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn markdown_merge_keeps_unique_content_in_matching_sections() {
+        let local = "# Profile\n\n## Preferences\n\n- Local choice\n";
+        let remote =
+            "# Profile\n\n## Preferences\n\n- Remote choice\n\n## Environment\n\n- Windows\n";
+
+        let merged = merge_markdown(local, remote);
+
+        assert_eq!(merged.matches("# Profile").count(), 1);
+        assert_eq!(merged.matches("## Preferences").count(), 1);
+        assert!(merged.contains("- Local choice"));
+        assert!(merged.contains("- Remote choice"));
+        assert!(merged.contains("## Environment\n\n- Windows"));
+    }
+
+    #[test]
+    fn artifact_index_merge_unions_artifacts_and_keeps_newer_duplicate() {
+        let local = json!({
+            "version": 1,
+            "lastUpdated": 20,
+            "artifacts": [
+                {"uri":"agent://shared","title":"Local","updatedAt":10},
+                {"uri":"agent://local","title":"Local only","updatedAt":20}
+            ]
+        });
+        let remote = json!({
+            "version": 2,
+            "lastUpdated": 30,
+            "artifacts": [
+                {"uri":"agent://shared","title":"Remote","updatedAt":30},
+                {"uri":"agent://remote","title":"Remote only","updatedAt":25}
+            ]
+        });
+
+        let merged = merge_artifact_index(&local, &remote).expect("merge artifact index");
+        let artifacts = merged["artifacts"].as_array().expect("artifacts");
+
+        assert_eq!(merged["version"], 2);
+        assert_eq!(merged["lastUpdated"], 30);
+        assert_eq!(artifacts.len(), 3);
+        assert_eq!(
+            artifacts
+                .iter()
+                .find(|artifact| artifact["uri"] == "agent://shared")
+                .expect("shared")["title"],
+            "Remote"
+        );
+    }
+
+    #[test]
+    fn apply_merges_profile_blobs_artifacts_and_portable_app_config() {
+        let blob_id = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        let remote = temp_root("remote-portable-data");
+        write(
+            &remote.join("projects/key/session-1.jsonl"),
+            &format!(
+                "{{\"type\":\"message\",\"sessionId\":\"session-1\",\"blob_id\":\"{blob_id}\"}}\n"
+            ),
+        );
+        write(
+            &remote.join(format!("blobs/cc/{blob_id}.png")),
+            "blob-bytes",
+        );
+        write(
+            &remote.join("MEMORY.md"),
+            "# Memory\n\n## Facts\n\n- Remote fact\n",
+        );
+        write(
+            &remote.join("memory/profile.md"),
+            "# Profile\n\n- Remote profile\n",
+        );
+        write(
+            &remote.join("artifact-index/session-1.json"),
+            r#"{"version":1,"lastUpdated":30,"artifacts":[{"uri":"agent://remote","updatedAt":30}]}"#,
+        );
+        write(
+            &remote.join("app/app-config.json"),
+            r#"{"defaultWorkspacePath":"D:\\Remote","disableAgentTeams":true,"personalization":{"toneStyle":"concise","customPrompt":"remote prompt"}}"#,
+        );
+        let package = remote.join("remote.zip");
+        build_sync_package(&remote, &package).expect("build remote package");
+
+        let local = temp_root("local-portable-data");
+        write(
+            &local.join("MEMORY.md"),
+            "# Memory\n\n## Facts\n\n- Local fact\n",
+        );
+        write(
+            &local.join("artifact-index/session-1.json"),
+            r#"{"version":1,"lastUpdated":20,"artifacts":[{"uri":"agent://local","updatedAt":20}]}"#,
+        );
+        write(
+            &local.join("app/app-config.json"),
+            r#"{"defaultWorkspacePath":"E:\\Local","disableAgentTeams":false,"personalization":{"toneStyle":"","customPrompt":""}}"#,
+        );
+
+        apply_sync_package(&local, &package, SyncStrategy::RemoteOverwriteLocal)
+            .expect("apply remote package");
+
+        let memory = fs::read_to_string(local.join("MEMORY.md")).expect("memory");
+        assert!(memory.contains("- Local fact"));
+        assert!(memory.contains("- Remote fact"));
+        assert_eq!(
+            fs::read(local.join(format!("blobs/cc/{blob_id}.png"))).expect("blob"),
+            b"blob-bytes"
+        );
+        let artifacts: Value = serde_json::from_slice(
+            &fs::read(local.join("artifact-index/session-1.json")).expect("artifact index"),
+        )
+        .expect("parse artifact index");
+        assert_eq!(
+            artifacts["artifacts"].as_array().expect("artifacts").len(),
+            2
+        );
+        let app_config: Value = serde_json::from_slice(
+            &fs::read(local.join("app/app-config.json")).expect("app config"),
+        )
+        .expect("parse app config");
+        assert_eq!(app_config["defaultWorkspacePath"], r"E:\Local");
+        assert_eq!(app_config["disableAgentTeams"], true);
+        assert_eq!(
+            app_config["personalization"]["customPrompt"],
+            "remote prompt"
+        );
+        assert!(local.join("memory/profile.md").exists());
+
+        fs::remove_dir_all(local).ok();
+        fs::remove_dir_all(remote).ok();
     }
 
     #[test]
@@ -1618,30 +2281,38 @@ mod tests {
     }
 
     #[test]
-    fn smart_merge_keeps_local_provider_api_key_when_remote_differs() {
-        let local = json!([
-            {"id":"provider-a","name":"Local","baseUrl":"https://local.example/v1","apiKey":"sk-local"}
-        ]);
-        let remote = json!([
-            {"id":"provider-a","name":"Remote","baseUrl":"https://remote.example/v1","apiKey":"sk-remote"}
-        ]);
+    fn smart_merge_leaves_local_models_and_providers_unchanged() {
+        let local = temp_root("smart-merge-local-config");
+        let local_models = r#"[{"id":"local-model","apiKey":"sk-local-model"}]"#;
+        let local_providers = r#"[{"id":"local-provider","apiKey":"sk-local-provider"}]"#;
+        write(&local.join("models.json"), local_models);
+        write(&local.join("model-providers.json"), local_providers);
 
-        let merged = merge_provider_values(&local, &remote, SyncStrategy::SmartMerge)
-            .expect("merge providers");
-        let provider = merged.as_array().expect("array").first().expect("provider");
+        let remote = temp_root("smart-merge-remote-config");
+        write(
+            &remote.join("models.json"),
+            r#"[{"id":"remote-model","apiKey":"sk-remote-model"}]"#,
+        );
+        write(
+            &remote.join("model-providers.json"),
+            r#"[{"id":"remote-provider","apiKey":"sk-remote-provider"}]"#,
+        );
+        let package = remote.join("remote.zip");
+        build_sync_package(&remote, &package).expect("build remote package");
+
+        apply_sync_package(&local, &package, SyncStrategy::SmartMerge)
+            .expect("apply smart merge package");
 
         assert_eq!(
-            provider.get("apiKey").and_then(serde_json::Value::as_str),
-            Some("sk-local")
+            fs::read_to_string(local.join("models.json")).expect("models"),
+            local_models
         );
         assert_eq!(
-            provider.get("name").and_then(serde_json::Value::as_str),
-            Some("Remote")
+            fs::read_to_string(local.join("model-providers.json")).expect("providers"),
+            local_providers
         );
-        assert_eq!(
-            provider.get("baseUrl").and_then(serde_json::Value::as_str),
-            Some("https://remote.example/v1")
-        );
+        fs::remove_dir_all(local).ok();
+        fs::remove_dir_all(remote).ok();
     }
 
     #[test]

@@ -515,7 +515,7 @@ function App() {
   async function handleDeleteProvider(providerId: string) {
     const provider = providers.find((item) => item.id === providerId);
     const label = provider?.name ?? providerId;
-    if (!window.confirm(`确认删除供应商 ${label}？`)) {
+    if (!window.confirm(`确认删除供应商 ${label}，以及该供应商下的所有模型？`)) {
       return;
     }
 
@@ -526,13 +526,15 @@ function App() {
       const nextProviders = await invokeCommand<Provider[]>("delete_provider", {
         providerId,
       });
+      const nextModels = await invokeCommand<WorkBuddyModel[]>("load_workbuddy_models");
       setProviders(nextProviders);
+      setModels(nextModels);
       if (selectedProviderId === providerId) {
         setSelectedProviderId(nextProviders[0]?.id ?? "");
         setFetchedModels([]);
         setSelectedModelIds(new Set());
       }
-      setMessage("供应商已删除");
+      setMessage("供应商及其模型已删除");
     } catch (err) {
       setError(toErrorMessage(err));
     }
@@ -1216,7 +1218,7 @@ function SyncSettingsSection({ settings, strategy, loading, saving, remoteInfo, 
   const configured = Boolean(settings.baseUrl.trim() && settings.username.trim() && settings.password.trim());
   return (
     <div className="settings-sync" aria-labelledby="sync-title">
-      <div className="settings-section-heading"><h3 id="sync-title">同步操作</h3><p>将会话与模型配置打包后同步到 WebDAV。</p></div>
+      <div className="settings-section-heading"><h3 id="sync-title">同步操作</h3><p>将会话、记忆、附件与模型配置打包后同步到 WebDAV。</p></div>
       <div className="sync-content">
         <div className="sync-card">
           {!configured ? <div className="sync-unconfigured"><CircleAlert size={20} /><div><strong>尚未配置 WebDAV</strong><p>请先填写并保存 WebDAV 地址、用户名和密码，再执行同步操作。</p></div></div> : null}
@@ -1224,7 +1226,7 @@ function SyncSettingsSection({ settings, strategy, loading, saving, remoteInfo, 
           <div className="provider-form sync-options">
             <label><span className="field-label">同步策略</span><select value={strategy} onChange={(e) => onStrategyChange(e.target.value as SyncStrategy)}><option value="smartMerge">智能合并</option><option value="remoteOverwriteLocal">远端覆盖本机</option><option value="localOverwriteRemote">本机覆盖远端</option></select></label>
           </div>
-          <div className={`warning-box${settings.passphrase.trim() ? "" : " warning-box-danger"}`}>同步包包含会话、models.json 与 model-providers.json（可能包含 API Key）。填写同步加密密码时上传为 workbuddy-sync.zip.enc；留空时将以明文 workbuddy-sync.zip 上传，会话、模型配置及 API Key 将以明文存储在 WebDAV，存在安全风险。</div>
+          <div className={`warning-box${settings.passphrase.trim() ? "" : " warning-box-danger"}`}>同步包包含会话、用户记忆、会话附件、个性化配置、models.json 与 model-providers.json（可能包含 API Key）；智能合并时会保留本机的模型和供应商配置。填写同步加密密码时上传为 workbuddy-sync.zip.enc；留空时将以明文 workbuddy-sync.zip 上传，上述内容将以明文存储在 WebDAV，存在安全风险。</div>
           <div className="sync-actions">
             <button type="button" className="secondary-button" onClick={onCancel} disabled={saving}>取消</button>
             <button type="submit" className="primary-button" disabled={saving}>保存</button>

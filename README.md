@@ -49,11 +49,11 @@ WorkBuddy Tools is a Windows desktop companion for managing WorkBuddy model prov
 
 ### WebDAV sync
 
-- Sync WorkBuddy session metadata, project JSONL files, models, and provider settings as one ZIP package.
+- Sync WorkBuddy sessions, referenced blobs, artifact indexes, user memory Markdown, portable personalization fields, models, and provider settings as one ZIP package.
 - Choose smart merge, remote overwrite, or local overwrite.
 - Optionally encrypt the package with a dedicated sync passphrase.
 - Create a local backup before a remote overwrite.
-- Preserve local API keys during smart merge when appropriate.
+- Keep local model and provider configuration unchanged during smart merge.
 - Repair workspace paths when devices use different default workspace roots.
 
 During session sync, the remote and local `defaultWorkspacePath` values are compared. The local value is read from:
@@ -70,7 +70,7 @@ D:\OneDrive\WorkBuddy\WorkSpace\project-a
 E:\OneDrive\WorkBuddy\WorkSpace\project-a
 ```
 
-`app-config.json` itself is not uploaded. Only the default workspace path required for this comparison is included in the exported session metadata.
+The full `app-config.json` is not uploaded. The package contains only `disableAgentTeams`, `personalization`, and the default workspace path metadata required for path repair.
 
 ## Synced Data
 
@@ -78,12 +78,16 @@ E:\OneDrive\WorkBuddy\WorkSpace\project-a
 | --- | --- | --- |
 | Session metadata | Yes | Exported from `workbuddy.db`; the database file itself is not uploaded |
 | Project conversations | Yes | `%USERPROFILE%\.workbuddy\projects\**\*.jsonl` |
+| Referenced session blobs | Yes | Content-addressed files referenced by synchronized conversations |
+| Artifact indexes | Yes | Merged by session and stable artifact identity |
+| User memory and identity | Yes | Root identity Markdown plus `memory/**/*.md`; backup files are excluded |
+| Portable personalization | Selected fields | `disableAgentTeams` and `personalization` only |
 | Models | Yes | `models.json` |
 | Provider settings | Yes | `model-providers.json`, which may contain API keys |
-| Default workspace path | Metadata only | Used for path repair; `app-config.json` is not uploaded |
+| Default workspace path | Metadata only | Used for path repair; the complete `app-config.json` is not uploaded |
 | Runtime files | No | PID sidecars, caches, logs, SQLite WAL and SHM files are excluded |
 
-The remote package is named `workbuddy-sync.zip.enc` when encryption is enabled, or `workbuddy-sync.zip` when no passphrase is configured. An unencrypted package can expose conversations, model configuration, and API keys to the WebDAV server; encryption is strongly recommended.
+The remote package is named `workbuddy-sync.zip.enc` when encryption is enabled, or `workbuddy-sync.zip` when no passphrase is configured. An unencrypted package can expose conversations, user memory, attachments, personalization, model configuration, and API keys to the WebDAV server; encryption is strongly recommended.
 
 ## Configuration Files
 
