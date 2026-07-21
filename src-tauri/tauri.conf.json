@@ -36,7 +36,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFGQTQ4RUQ2MkY1QjQwMkYKUldRdlFGc3YxbzZrcjVOdFJVbmoyV0QxT3VoQm0zNGxmbWNHRHpaOEVSVzljc29DSzcyNVprSUIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhCNzJCNzgyQjcxQkJEOEIKUldTTHZSdTNncmR5aTkwRVVhRjRSeEJFOWM3TEJFT2R6TkQvditwNnBTL3BQekpjQnFzVDM5YUsK",
       "endpoints": [
         "https://github.com/gcdd1993/WorkBuddyTools/releases/latest/download/latest.json"
       ]
