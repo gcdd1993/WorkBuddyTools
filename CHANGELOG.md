@@ -7,15 +7,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-21
+
 ### Added
 
 - Added automatic signed application update checks, a header update indicator, download progress, and in-app installation with restart.
 - Added Tauri updater artifacts and signing configuration to the GitHub release workflow.
 - Added a GitHub Release fallback for versions published before updater metadata was available.
+- Expanded WebDAV packages with referenced session blobs, artifact indexes, user memory and identity Markdown, and portable personalization fields.
+- Added staged WebDAV synchronization progress, accessible progress semantics, and an animated in-progress sync action.
+
+### Changed
+
+- Smart merge now preserves local model and provider configuration while merging sessions, memory, attachments, artifact indexes, and portable personalization.
+- Provider list rows now use a fixed height with stable content and action alignment.
+- Provider-backed models now record their provider ID for reliable lifecycle management.
 
 ### Fixed
 
 - Smart merge now maps projects outside the remote default workspace from the remote workspace drive to the local workspace drive while preserving their directory structure.
+- Deleting a provider now also removes its associated models, including legacy entries without a provider ID marker.
 
 ## [0.2.3] - 2026-07-14
 
@@ -59,7 +70,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Initial tagged release of the WorkBuddy model configuration desktop application.
 - Added automated dependency updates and the initial build and release workflow.
 
-[Unreleased]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.0...v0.2.1

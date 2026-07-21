@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-![Version](https://img.shields.io/badge/version-0.2.3-blue)
+![Version](https://img.shields.io/badge/version-0.2.4-blue)
 ![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB)
 ![Rust](https://img.shields.io/badge/Rust-2021-000000)
 ![React](https://img.shields.io/badge/React-18-61DAFB)
@@ -55,6 +55,7 @@ WorkBuddy Tools is a Windows desktop companion for managing WorkBuddy model prov
 - Create a local backup before a remote overwrite.
 - Keep local model and provider configuration unchanged during smart merge.
 - Repair workspace paths when devices use different default workspace roots.
+- Show staged progress and an animated sync action while WebDAV work is running.
 
 During session sync, the remote and local `defaultWorkspacePath` values are compared. The local value is read from:
 
