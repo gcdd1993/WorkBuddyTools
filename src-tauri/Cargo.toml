@@ -21,7 +21,7 @@ chrono = { version = "0.4.39", features = ["serde"] }
 aes-gcm = "0.10.3"
 hex = "0.4.3"
 pbkdf2 = "0.12.2"
-rand = "0.8.5"
+rand = "0.9.4"
 reqwest = { version = "0.12.12", features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.32.1", features = ["bundled", "backup"] }
 serde = { version = "1.0.217", features = ["derive"] }
