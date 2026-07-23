@@ -1427,8 +1427,8 @@ fn rewrite_workspace_paths(
     transaction: &Transaction<'_>,
     rewrite: &WorkspacePathRewrite,
 ) -> Result<(), String> {
-    rewrite_table_path_column(transaction, "sessions", "cwd", rewrite)?;
-    rewrite_table_path_column(transaction, "workspaces", "path", rewrite)
+    rewrite_table_path_column(transaction, "sessions", "cwd", rewrite, false)?;
+    rewrite_table_path_column(transaction, "workspaces", "path", rewrite, true)
 }
 
 fn rewrite_table_path_column(
@@ -1436,6 +1436,7 @@ fn rewrite_table_path_column(
     table: &str,
     column: &str,
     rewrite: &WorkspacePathRewrite,
+    keep_existing_target: bool,
 ) -> Result<(), String> {
     if !sqlite_table_exists(transaction, table)?
         || !sqlite_column_exists(transaction, table, column)?
@@ -1473,7 +1474,27 @@ fn rewrite_table_path_column(
     let sql = format!(
         "UPDATE {table_identifier} SET {column_identifier} = ?1 WHERE {column_identifier} = ?2"
     );
+    let target_exists_sql =
+        format!("SELECT 1 FROM {table_identifier} WHERE {column_identifier} = ?1 LIMIT 1");
+    let delete_source_sql =
+        format!("DELETE FROM {table_identifier} WHERE {column_identifier} = ?1");
     for (old_path, new_path) in replacements {
+        // workspaces.path is unique in WorkBuddy. A project may already have a
+        // row using the repaired local path, so updating the stale remote-path
+        // row directly would violate that constraint. Keep the existing local
+        // row and remove only the duplicate stale row.
+        let target_exists = keep_existing_target
+            && transaction
+                .query_row(&target_exists_sql, [&new_path], |_| Ok(()))
+                .optional()
+                .map_err(|err| format!("检查修复后的 {table}.{column} 路径是否存在失败：{err}"))?
+                .is_some();
+        if target_exists {
+            transaction
+                .execute(&delete_source_sql, [&old_path])
+                .map_err(|err| format!("合并重复 {table}.{column} 路径失败：{err}"))?;
+            continue;
+        }
         transaction
             .execute(&sql, rusqlite::params![new_path, old_path])
             .map_err(|err| format!("修复 {table}.{column} 路径失败：{err}"))?;
@@ -2050,7 +2071,7 @@ mod tests {
                 );
                 CREATE TABLE workspaces (
                     id TEXT PRIMARY KEY,
-                    path TEXT
+                    path TEXT UNIQUE
                 );",
             )
             .expect("create test schema");
@@ -2392,6 +2413,61 @@ mod tests {
 
         assert_eq!(actual_session_cwd, local_session_cwd);
         assert_eq!(actual_workspace_path, local_workspace_path);
+
+        fs::remove_dir_all(local).ok();
+        fs::remove_dir_all(remote).ok();
+    }
+
+    #[test]
+    fn apply_merges_workspace_when_repaired_path_already_exists() {
+        let remote = temp_root("remote-duplicate-workspace-path");
+        let local = temp_root("local-duplicate-workspace-path");
+        let remote_default = r"D:\OneDrive\WorkBuddy\WorkSpace";
+        let local_default = r"E:\OneDrive\WorkBuddy\WorkSpace";
+        let remote_project = format!(r"{}\ProjectA", remote_default);
+        let local_project = format!(r"{}\ProjectA", local_default);
+
+        write_app_config(&remote, remote_default);
+        create_sync_database(&remote, Some(&remote_project), None);
+        let package = remote.join("remote.zip");
+        build_sync_package(&remote, &package).expect("build remote package");
+
+        write_app_config(&local, local_default);
+        create_sync_database(&local, None, Some(&remote_project));
+        let connection = Connection::open(local.join("workbuddy.db")).expect("open local db");
+        connection
+            .execute(
+                "INSERT INTO workspaces (id, path) VALUES ('workspace-local', ?1)",
+                [&local_project],
+            )
+            .expect("insert existing local workspace");
+        drop(connection);
+
+        apply_sync_package(&local, &package, SyncStrategy::SmartMerge).expect("apply package");
+
+        let connection = Connection::open(local.join("workbuddy.db")).expect("open local db");
+        let workspaces = connection
+            .prepare("SELECT id, path FROM workspaces ORDER BY id")
+            .expect("prepare workspace query")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("query workspaces")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read workspaces");
+        let session_cwd: String = connection
+            .query_row(
+                "SELECT cwd FROM sessions WHERE id = 'session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read session cwd");
+
+        assert_eq!(
+            workspaces,
+            vec![("workspace-local".to_string(), local_project.clone())]
+        );
+        assert_eq!(session_cwd, local_project);
 
         fs::remove_dir_all(local).ok();
         fs::remove_dir_all(remote).ok();

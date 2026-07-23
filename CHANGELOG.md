@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-23
+
+### Fixed
+
+- Fixed WebDAV sync failures when repaired workspace paths collide with an existing local workspace.
+
 ## [0.2.4] - 2026-07-21
 
 ### Added
@@ -70,7 +76,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Initial tagged release of the WorkBuddy model configuration desktop application.
 - Added automated dependency updates and the initial build and release workflow.
 
-[Unreleased]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.1...v0.2.2
