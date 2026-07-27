@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-27
+
+### Added
+
+- Added automatic fallback model metadata lookup through models.dev for models missing from the bundled database.
+- Added WorkBuddy reasoning-effort configuration generation and official Grok 4.5 capability metadata.
+- Expanded the bundled model database from Cherry Studio's generated provider registry and added a repeatable catalog synchronization command.
+
+### Fixed
+
+- Normalized numeric dot and hyphen variants such as `grok-4.5` and `grok-4-5` during model catalog matching.
+
 ## [0.2.5] - 2026-07-23
 
 ### Fixed
@@ -76,7 +88,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Initial tagged release of the WorkBuddy model configuration desktop application.
 - Added automated dependency updates and the initial build and release workflow.
 
-[Unreleased]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.2...v0.2.3

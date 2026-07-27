@@ -34,8 +34,9 @@ WorkBuddy Tools is a Windows desktop companion for managing WorkBuddy model prov
 - Add, update, and remove third-party OpenAI-compatible models.
 - Store provider names, API endpoints, and API keys separately in `model-providers.json`.
 - Fetch available models from a provider's `/v1/models` endpoint.
-- Infer tool calling, image input, reasoning, and custom protocol capabilities.
-- Fill input and output token limits from provider metadata or the built-in model database.
+- Infer tool calling, image input, reasoning, custom protocol, and reasoning-effort capabilities.
+- Fill token limits and capabilities from provider metadata, the built-in database, or the models.dev public catalog.
+- Sync the bundled catalog from Cherry Studio's provider registry with `npm run sync:model-database`.
 - Back up `models.json` before changing it.
 
 ### Sessions

@@ -114,6 +114,8 @@ type WorkBuddyModel = {
   supportsToolCall?: boolean;
   supportsImages?: boolean;
   supportsReasoning?: boolean;
+  onlyReasoning?: boolean;
+  reasoning?: ModelReasoningConfig;
   useCustomProtocol?: boolean;
   maxInputTokens?: number;
   maxOutputTokens?: number;
@@ -137,6 +139,12 @@ type ModelCapabilities = {
   useCustomProtocol: boolean;
 };
 
+type ModelReasoningConfig = {
+  defaultEffort?: string;
+  supportedEfforts?: string[];
+  canDisableThinking?: boolean;
+};
+
 type ProviderModel = {
   id: string;
   name: string;
@@ -146,6 +154,8 @@ type ProviderModel = {
   maxOutputTokens?: number;
   raw: unknown;
   capabilities: ModelCapabilities;
+  reasoning?: ModelReasoningConfig;
+  onlyReasoning?: boolean;
 };
 
 type FetchModelsResult = {

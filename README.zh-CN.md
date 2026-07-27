@@ -34,8 +34,9 @@ WorkBuddy Tools 是一个面向 Windows 的 WorkBuddy 桌面辅助工具，用�
 - 添加、更新和删除第三方 OpenAI 兼容模型。
 - 在 `model-providers.json` 中独立保存供应商名称、API 地址和 API Key。
 - 从供应商的 `/v1/models` 接口拉取可用模型。
-- 自动推断工具调用、图片输入、推理和自定义协议能力。
-- 优先使用供应商元数据，并通过内置模型数据库补齐输入、输出 token 上限。
+- 自动推断工具调用、图片输入、推理和自定义协议能力，并填充思考强度配置。
+- 优先使用供应商元数据，再通过内置模型数据库和 models.dev 公共目录补齐输入、输出 token 上限与模型能力。
+- 内置数据库参考 Cherry Studio provider-registry 生成，并可通过 `npm run sync:model-database` 更新。
 - 修改前自动备份 `models.json`。
 
 ### 会话管理

@@ -22,6 +22,7 @@ use url::Url;
 
 const MODELS_FILE_NAME: &str = "models.json";
 const PROVIDERS_FILE_NAME: &str = "model-providers.json";
+const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +73,8 @@ struct ProviderModel {
     max_output_tokens: Option<u64>,
     raw: Value,
     capabilities: ModelCapabilities,
+    reasoning: Option<ModelReasoningConfig>,
+    only_reasoning: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +84,21 @@ struct ModelDatabaseInfo {
     supports_tool_call: Option<bool>,
     supports_images: Option<bool>,
     supports_reasoning: Option<bool>,
+    reasoning_efforts: Vec<String>,
+    default_reasoning_effort: Option<String>,
+    can_disable_thinking: Option<bool>,
+    only_reasoning: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelReasoningConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    supported_efforts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    can_disable_thinking: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,7 +264,7 @@ async fn fetch_provider_models(provider_id: String) -> Result<FetchModelsResult,
     let parsed: OpenAiModelsResponse = serde_json::from_str(&body)
         .map_err(|err| format!("模型响应不是 OpenAI 兼容格式：{err}"))?;
 
-    let mut models = parsed
+    let raw_models = parsed
         .data
         .into_iter()
         .filter_map(|raw| {
@@ -255,8 +273,31 @@ async fn fetch_provider_models(provider_id: String) -> Result<FetchModelsResult,
                 return None;
             }
 
-            let database_info = model_database_info(&id);
-            Some(ProviderModel {
+            Some((id, raw))
+        })
+        .collect::<Vec<_>>();
+
+    // Most OpenAI-compatible /models endpoints only return an id. For models
+    // absent from the bundled catalog, use models.dev as a best-effort source.
+    // A catalog outage must never prevent the provider's own model list loading.
+    let remote_catalog = if raw_models
+        .iter()
+        .any(|(id, _)| model_database_info(id).is_none())
+    {
+        fetch_models_dev_catalog(&client).await.unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
+
+    let mut models = raw_models
+        .into_iter()
+        .map(|(id, raw)| {
+            let database_info = model_database_info(&id)
+                .or_else(|| remote_model_database_info(&remote_catalog, &id));
+            let reasoning = reasoning_config(database_info.as_ref());
+            let only_reasoning = database_info.as_ref().and_then(|info| info.only_reasoning);
+
+            ProviderModel {
                 name: id.clone(),
                 capabilities: infer_capabilities(&id, &raw, database_info.as_ref()),
                 max_input_tokens: extract_max_input_tokens(&raw)
@@ -267,7 +308,9 @@ async fn fetch_provider_models(provider_id: String) -> Result<FetchModelsResult,
                 provider_id: provider.id.clone(),
                 provider_name: provider.name.clone(),
                 raw,
-            })
+                reasoning,
+                only_reasoning,
+            }
         })
         .collect::<Vec<_>>();
 
@@ -584,7 +627,147 @@ fn model_database_info(model: &str) -> Option<ModelDatabaseInfo> {
         supports_reasoning: capabilities
             .and_then(|value| value.get("reasoning"))
             .and_then(Value::as_bool),
+        reasoning_efforts: string_array(entry.get("reasoningEfforts")),
+        default_reasoning_effort: entry
+            .get("defaultReasoningEffort")
+            .and_then(Value::as_str)
+            .map(ToString::to_string),
+        can_disable_thinking: entry.get("canDisableThinking").and_then(Value::as_bool),
+        only_reasoning: entry.get("onlyReasoning").and_then(Value::as_bool),
     })
+}
+
+fn reasoning_config(info: Option<&ModelDatabaseInfo>) -> Option<ModelReasoningConfig> {
+    let info = info?;
+    if info.reasoning_efforts.is_empty()
+        && info.default_reasoning_effort.is_none()
+        && info.can_disable_thinking.is_none()
+    {
+        return None;
+    }
+
+    Some(ModelReasoningConfig {
+        default_effort: info.default_reasoning_effort.clone(),
+        supported_efforts: info.reasoning_efforts.clone(),
+        can_disable_thinking: info.can_disable_thinking,
+    })
+}
+
+fn string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect()
+}
+
+async fn fetch_models_dev_catalog(
+    client: &reqwest::Client,
+) -> Result<HashMap<String, ModelDatabaseInfo>, String> {
+    let response = client
+        .get(MODELS_DEV_API_URL)
+        .timeout(Duration::from_secs(8))
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|err| format!("请求 models.dev 模型目录失败：{err}"))?;
+
+    if !response.status().is_success() {
+        return Err(format!("models.dev 模型目录返回 {}", response.status()));
+    }
+
+    let catalog: Value = response
+        .json()
+        .await
+        .map_err(|err| format!("解析 models.dev 模型目录失败：{err}"))?;
+    Ok(parse_models_dev_catalog(&catalog))
+}
+
+fn parse_models_dev_catalog(catalog: &Value) -> HashMap<String, ModelDatabaseInfo> {
+    let mut result = HashMap::new();
+    let Some(providers) = catalog.as_object() else {
+        return result;
+    };
+
+    for provider in providers.values() {
+        let Some(models) = provider.get("models").and_then(Value::as_object) else {
+            continue;
+        };
+        for (key, model) in models {
+            let id = model.get("id").and_then(Value::as_str).unwrap_or(key);
+            let input_modalities = model.get("modalities").and_then(|value| value.get("input"));
+            let efforts = model
+                .get("reasoning_options")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .find(|option| option.get("type").and_then(Value::as_str) == Some("effort"))
+                .map(|option| string_array(option.get("values")))
+                .unwrap_or_default();
+            let info = ModelDatabaseInfo {
+                context_window: model
+                    .get("limit")
+                    .and_then(|value| value.get("context"))
+                    .and_then(value_to_u64),
+                max_output: model
+                    .get("limit")
+                    .and_then(|value| value.get("output"))
+                    .and_then(value_to_u64),
+                supports_tool_call: model.get("tool_call").and_then(Value::as_bool),
+                supports_images: Some(
+                    model
+                        .get("attachment")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                        || string_array(input_modalities)
+                            .iter()
+                            .any(|item| item == "image"),
+                ),
+                supports_reasoning: model.get("reasoning").and_then(Value::as_bool),
+                reasoning_efforts: efforts,
+                default_reasoning_effort: None,
+                can_disable_thinking: None,
+                only_reasoning: None,
+            };
+            result.entry(canonical_model_id(id)).or_insert(info);
+        }
+    }
+
+    result
+}
+
+fn remote_model_database_info(
+    catalog: &HashMap<String, ModelDatabaseInfo>,
+    model: &str,
+) -> Option<ModelDatabaseInfo> {
+    let stripped = model.rsplit('/').next().unwrap_or(model);
+    catalog
+        .get(&canonical_model_id(model))
+        .or_else(|| catalog.get(&canonical_model_id(stripped)))
+        .cloned()
+}
+
+fn canonical_model_id(model: &str) -> String {
+    let lower = model.trim().to_ascii_lowercase();
+    let characters = lower.chars().collect::<Vec<_>>();
+    characters
+        .iter()
+        .enumerate()
+        .map(|(index, character)| {
+            if matches!(character, '-' | '.')
+                && index > 0
+                && index + 1 < characters.len()
+                && characters[index - 1].is_ascii_digit()
+                && characters[index + 1].is_ascii_digit()
+            {
+                '.'
+            } else {
+                *character
+            }
+        })
+        .collect()
 }
 
 fn model_database_entries() -> Option<&'static serde_json::Map<String, Value>> {
@@ -606,11 +789,18 @@ fn model_database_entry(model: &str) -> Option<&'static Value> {
     let entries = model_database_entries()?;
     let name = model.to_ascii_lowercase();
     let stripped = name.rsplit('/').next().unwrap_or(&name);
+    let canonical_name = canonical_model_id(&name);
+    let canonical_stripped = canonical_model_id(stripped);
 
     if let Some(entry) = entries.get(name.as_str()) {
         return Some(entry);
     }
     if let Some(entry) = entries.get(stripped) {
+        return Some(entry);
+    }
+    if let Some((_, entry)) = entries.iter().find(|(key, _)| {
+        canonical_model_id(key) == canonical_name || canonical_model_id(key) == canonical_stripped
+    }) {
         return Some(entry);
     }
 
@@ -782,6 +972,15 @@ fn workbuddy_model_from_provider(
 
     if let Some(value) = fetched.max_output_tokens {
         model["maxOutputTokens"] = json!(value);
+    }
+
+    if let Some(reasoning) = &fetched.reasoning {
+        model["reasoning"] = serde_json::to_value(reasoning)
+            .map_err(|err| format!("序列化模型思考配置失败：{err}"))?;
+    }
+
+    if let Some(only_reasoning) = fetched.only_reasoning {
+        model["onlyReasoning"] = json!(only_reasoning);
     }
 
     Ok(model)
@@ -1010,9 +1209,69 @@ mod tests {
         let info = model_database_info("deepseek-ai/DeepSeek-V4-Pro").expect("model metadata");
 
         assert_eq!(info.context_window, Some(1_048_576));
-        assert_eq!(info.max_output, Some(384_000));
+        assert_eq!(info.max_output, Some(393_216));
         assert_eq!(info.supports_tool_call, Some(true));
         assert_eq!(info.supports_reasoning, Some(true));
+    }
+
+    #[test]
+    fn model_database_normalizes_numeric_dot_and_hyphen_ids() {
+        let info = model_database_info("x-ai/grok-4-5").expect("grok metadata");
+
+        assert_eq!(info.context_window, Some(500_000));
+        assert_eq!(info.max_output, Some(500_000));
+        assert_eq!(info.supports_tool_call, Some(true));
+        assert_eq!(info.supports_images, Some(true));
+        assert_eq!(info.supports_reasoning, Some(true));
+        assert_eq!(
+            info.reasoning_efforts,
+            vec!["low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(info.default_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(info.can_disable_thinking, Some(false));
+        assert_eq!(info.only_reasoning, Some(true));
+
+        let workbuddy_reasoning = serde_json::to_value(
+            reasoning_config(Some(&info)).expect("WorkBuddy reasoning config"),
+        )
+        .expect("serialized reasoning config");
+        assert_eq!(workbuddy_reasoning["defaultEffort"], "high");
+        assert_eq!(
+            workbuddy_reasoning["supportedEfforts"],
+            json!(["low", "medium", "high", "xhigh"])
+        );
+        assert_eq!(workbuddy_reasoning["canDisableThinking"], false);
+    }
+
+    #[test]
+    fn models_dev_catalog_supplies_unknown_model_metadata() {
+        let catalog = json!({
+            "example": {
+                "models": {
+                    "future-2-1": {
+                        "id": "future-2-1",
+                        "attachment": true,
+                        "reasoning": true,
+                        "tool_call": true,
+                        "reasoning_options": [{
+                            "type": "effort",
+                            "values": ["low", "high"]
+                        }],
+                        "modalities": { "input": ["text", "image"] },
+                        "limit": { "context": 300000, "output": 64000 }
+                    }
+                }
+            }
+        });
+
+        let parsed = parse_models_dev_catalog(&catalog);
+        let info = remote_model_database_info(&parsed, "vendor/future-2.1")
+            .expect("remote model metadata");
+
+        assert_eq!(info.context_window, Some(300_000));
+        assert_eq!(info.max_output, Some(64_000));
+        assert_eq!(info.supports_images, Some(true));
+        assert_eq!(info.reasoning_efforts, vec!["low", "high"]);
     }
 
     #[test]
