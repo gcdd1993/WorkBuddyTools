@@ -1187,6 +1187,8 @@ pub fn run() {
             settings::save_app_settings,
             sessions::list_workbuddy_sessions,
             sessions::update_workbuddy_session,
+            sessions::preview_workbuddy_session_cwd_replace,
+            sessions::batch_replace_workbuddy_session_cwd,
             sessions::delete_workbuddy_session,
             webdav::webdav_test_connection,
             webdav::webdav_fetch_remote_info,

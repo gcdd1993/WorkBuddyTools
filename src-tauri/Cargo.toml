@@ -1,6 +1,6 @@
 [package]
 name = "workbuddy-model-config"
-version = "0.3.0"
+version = "0.3.1"
 description = "WorkBuddy third-party model configuration tool"
 authors = ["WorkBuddyTools"]
 edition = "2021"
@@ -23,6 +23,7 @@ hex = "0.4.3"
 pbkdf2 = "0.12.2"
 rand = "0.8.5"
 reqwest = { version = "0.12.12", features = ["json", "rustls-tls"] }
+regex = "1.11.1"
 rusqlite = { version = "0.32.1", features = ["bundled", "backup"] }
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.134"

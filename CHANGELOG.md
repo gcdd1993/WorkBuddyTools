@@ -7,6 +7,17 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-11
+
+### Added
+
+- Added batch editing for session working directories within the current session search results.
+- Added literal and regular-expression replacement modes with old/new path previews before applying changes.
+
+### Changed
+
+- Batch working-directory updates now run in one database transaction, skip active sessions, and reject stale previews when session paths change before confirmation.
+
 ## [0.3.0] - 2026-07-27
 
 ### Added
@@ -88,7 +99,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Initial tagged release of the WorkBuddy model configuration desktop application.
 - Added automated dependency updates and the initial build and release workflow.
 
-[Unreleased]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.3...v0.2.4

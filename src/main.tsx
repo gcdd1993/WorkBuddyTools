@@ -21,6 +21,7 @@ import {
   Pencil,
   Plus,
   RefreshCcw,
+  Replace,
   Server,
   Sun,
   Trash2,
@@ -61,6 +62,33 @@ type WorkBuddySessionSummary = {
 type SessionEditForm = {
   title: string;
   cwd: string;
+};
+
+type SessionCwdReplaceMode = "literal" | "regex";
+
+type SessionCwdReplaceForm = {
+  mode: SessionCwdReplaceMode;
+  search: string;
+  replacement: string;
+};
+
+type SessionCwdReplacementPreview = {
+  sessionId: string;
+  title: string;
+  oldCwd: string;
+  newCwd: string;
+};
+
+type BatchReplaceSessionCwdPreviewResult = {
+  matches: SessionCwdReplacementPreview[];
+  skippedWorking: number;
+  unchanged: number;
+};
+
+type BatchReplaceSessionCwdResult = {
+  updated: number;
+  skippedWorking: number;
+  unchanged: number;
 };
 
 type DeleteSessionResult = {
@@ -920,6 +948,12 @@ function App() {
           onSaveEdit={handleSaveSession}
           onCloseEdit={closeEditSessionDialog}
           onDelete={handleDeleteSession}
+          onBatchComplete={async (result): Promise<void> => {
+            const skipped = result.skippedWorking > 0 ? `，跳过 ${result.skippedWorking} 个运行中会话` : "";
+            setMessage(`已更新 ${result.updated} 个会话的工作目录${skipped}`);
+            await refreshSessions();
+          }}
+          onBatchError={(batchError): void => setError(batchError)}
         />
       )}
       </>}
@@ -1021,6 +1055,8 @@ function SessionsTab({
   onSaveEdit,
   onCloseEdit,
   onDelete,
+  onBatchComplete,
+  onBatchError,
 }: {
   sessions: WorkBuddySessionSummary[];
   loading: boolean;
@@ -1034,8 +1070,11 @@ function SessionsTab({
   onSaveEdit: (event: FormEvent) => void;
   onCloseEdit: () => void;
   onDelete: (session: WorkBuddySessionSummary) => void;
+  onBatchComplete: (result: BatchReplaceSessionCwdResult) => Promise<void>;
+  onBatchError: (message: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [batchEditing, setBatchEditing] = useState(false);
   const normalizedQuery = query.trim().toLowerCase();
   const visibleSessions = sessions.filter((session) =>
     !normalizedQuery || session.title.toLowerCase().includes(normalizedQuery) || session.cwd.toLowerCase().includes(normalizedQuery),
@@ -1055,6 +1094,16 @@ function SessionsTab({
             aria-label="刷新会话列表"
           >
             {loading ? <Loader2 className="spin" size={18} /> : <RefreshCcw size={18} />}
+          </button>
+          <button
+            className="secondary-button session-batch-button"
+            type="button"
+            onClick={(): void => setBatchEditing(true)}
+            disabled={visibleSessions.length === 0 || loading}
+            title="批量替换当前筛选结果中的工作目录"
+          >
+            <Replace size={16} />
+            批量编辑
           </button>
           <input
             id="session-search"
@@ -1111,7 +1160,173 @@ function SessionsTab({
           onClose={onCloseEdit}
         />
       ) : null}
+      {batchEditing ? (
+        <SessionCwdBatchReplaceDialog
+          sessions={visibleSessions}
+          onClose={(): void => setBatchEditing(false)}
+          onComplete={onBatchComplete}
+          onError={onBatchError}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function SessionCwdBatchReplaceDialog({
+  sessions,
+  onClose,
+  onComplete,
+  onError,
+}: {
+  sessions: WorkBuddySessionSummary[];
+  onClose: () => void;
+  onComplete: (result: BatchReplaceSessionCwdResult) => Promise<void>;
+  onError: (message: string) => void;
+}): React.ReactElement {
+  const [form, setForm] = useState<SessionCwdReplaceForm>({
+    mode: "literal",
+    search: "",
+    replacement: "",
+  });
+  const [preview, setPreview] = useState<BatchReplaceSessionCwdPreviewResult | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const busy = previewing || applying;
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (event.key === "Escape" && !busy) {
+        onClose();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [busy, onClose]);
+
+  function updateForm(next: SessionCwdReplaceForm): void {
+    setForm(next);
+    setPreview(null);
+  }
+
+  function buildInput(expectedMatches: SessionCwdReplacementPreview[]): Record<string, unknown> {
+    return {
+      sessionIds: sessions.map((session): string => session.id),
+      search: form.search,
+      replacement: form.replacement,
+      isRegex: form.mode === "regex",
+      expectedMatches,
+    };
+  }
+
+  async function handlePreview(event: FormEvent): Promise<void> {
+    event.preventDefault();
+    setPreviewing(true);
+    onError("");
+    try {
+      const result = await invokeCommand<BatchReplaceSessionCwdPreviewResult>(
+        "preview_workbuddy_session_cwd_replace",
+        { input: buildInput([]) },
+      );
+      setPreview(result);
+    } catch (err) {
+      setPreview(null);
+      onError(toErrorMessage(err));
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  async function handleApply(): Promise<void> {
+    if (!preview || preview.matches.length === 0) {
+      return;
+    }
+    setApplying(true);
+    onError("");
+    try {
+      const result = await invokeCommand<BatchReplaceSessionCwdResult>(
+        "batch_replace_workbuddy_session_cwd",
+        { input: buildInput(preview.matches) },
+      );
+      await onComplete(result);
+      onClose();
+    } catch (err) {
+      onError(toErrorMessage(err));
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <section className="provider-dialog session-batch-dialog" role="dialog" aria-modal="true" aria-labelledby="session-batch-dialog-title">
+        <div className="dialog-header">
+          <div>
+            <h2 id="session-batch-dialog-title">批量编辑工作目录</h2>
+            <p>处理当前筛选结果中的 {sessions.length} 个会话</p>
+          </div>
+          <button className="icon-button" type="button" onClick={onClose} disabled={busy} aria-label="关闭批量编辑" title="关闭">
+            <X size={18} />
+          </button>
+        </div>
+
+        <form className="provider-form dialog-form session-batch-form" onSubmit={handlePreview}>
+          <fieldset className="replace-mode-fieldset">
+            <legend className="field-label">替换方式</legend>
+            <div className="segmented-control" role="group" aria-label="替换方式">
+              <button className={form.mode === "literal" ? "active" : ""} type="button" aria-pressed={form.mode === "literal"} onClick={(): void => updateForm({ ...form, mode: "literal" })}>精准替换</button>
+              <button className={form.mode === "regex" ? "active" : ""} type="button" aria-pressed={form.mode === "regex"} onClick={(): void => updateForm({ ...form, mode: "regex" })}>正则替换</button>
+            </div>
+          </fieldset>
+          <label>
+            <span className="field-label">查找内容<small>必填</small></span>
+            <input
+              value={form.search}
+              onChange={(event): void => updateForm({ ...form, search: event.target.value })}
+              placeholder={form.mode === "regex" ? String.raw`^E:\\WorkSpace` : String.raw`E:\WorkSpace`}
+              autoFocus
+              required
+            />
+          </label>
+          <label>
+            <span className="field-label">替换为</span>
+            <input value={form.replacement} onChange={(event): void => updateForm({ ...form, replacement: event.target.value })} placeholder={String.raw`D:\WorkSpace`} />
+          </label>
+
+          {preview ? (
+            <div className="replace-preview" aria-live="polite">
+              <div className="replace-preview-summary">
+                <strong>{preview.matches.length} 个会话将被修改</strong>
+                <span>{preview.unchanged} 个未匹配，{preview.skippedWorking} 个运行中已跳过</span>
+              </div>
+              {preview.matches.length > 0 ? (
+                <div className="replace-preview-list">
+                  {preview.matches.map((item): React.ReactElement => (
+                    <div className="replace-preview-item" key={item.sessionId}>
+                      <strong>{item.title}</strong>
+                      <span className="old-path" title={item.oldCwd}>{item.oldCwd}</span>
+                      <span className="new-path" title={item.newCwd}>{item.newCwd}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="dialog-actions">
+            <button className="secondary-button" type="button" onClick={onClose} disabled={busy}>取消</button>
+            <button className="secondary-button" type="submit" disabled={busy || form.search.length === 0}>
+              {previewing ? <Loader2 className="spin" size={16} /> : <Eye size={16} />}
+              预览替换
+            </button>
+            <button className="primary-button" type="button" onClick={handleApply} disabled={busy || !preview || preview.matches.length === 0}>
+              {applying ? <Loader2 className="spin" size={16} /> : <Check size={16} />}
+              确认修改
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }
 

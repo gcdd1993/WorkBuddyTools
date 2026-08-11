@@ -1,4 +1,5 @@
 use chrono::Utc;
+use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -41,6 +42,54 @@ pub struct UpdateSessionInput {
     pub session_id: String,
     pub title: String,
     pub cwd: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchReplaceSessionCwdInput {
+    pub session_ids: Vec<String>,
+    pub search: String,
+    pub replacement: String,
+    pub is_regex: bool,
+    pub expected_matches: Vec<SessionCwdReplacementExpectation>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCwdReplacementExpectation {
+    pub session_id: String,
+    pub old_cwd: String,
+    pub new_cwd: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCwdReplacementPreview {
+    pub session_id: String,
+    pub title: String,
+    pub old_cwd: String,
+    pub new_cwd: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchReplaceSessionCwdPreviewResult {
+    pub matches: Vec<SessionCwdReplacementPreview>,
+    pub skipped_working: usize,
+    pub unchanged: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchReplaceSessionCwdResult {
+    pub updated: usize,
+    pub skipped_working: usize,
+    pub unchanged: usize,
+}
+
+enum CwdReplacer {
+    Literal(String),
+    Regex(Regex),
 }
 
 #[derive(Debug)]
@@ -128,6 +177,57 @@ pub fn update_workbuddy_session(input: UpdateSessionInput) -> Result<(), String>
     transaction
         .commit()
         .map_err(|error| format!("提交会话编辑失败：{error}"))
+}
+
+#[tauri::command]
+pub fn preview_workbuddy_session_cwd_replace(
+    input: BatchReplaceSessionCwdInput,
+) -> Result<BatchReplaceSessionCwdPreviewResult, String> {
+    validate_batch_replace_input(&input)?;
+    let replacer = build_cwd_replacer(&input)?;
+    let root = workbuddy_dir()?;
+    let connection = open_database(&root)?;
+    preview_cwd_replacements(&connection, &input, &replacer)
+}
+
+#[tauri::command]
+pub fn batch_replace_workbuddy_session_cwd(
+    input: BatchReplaceSessionCwdInput,
+) -> Result<BatchReplaceSessionCwdResult, String> {
+    validate_batch_replace_input(&input)?;
+    let replacer = build_cwd_replacer(&input)?;
+    let root = workbuddy_dir()?;
+    let mut connection = open_database(&root)?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("开启工作目录批量替换事务失败：{error}"))?;
+    let preview = preview_cwd_replacements(&transaction, &input, &replacer)?;
+    validate_replacement_expectations(&preview.matches, &input.expected_matches)?;
+    let updated_at = Utc::now().timestamp_millis();
+
+    for replacement in &preview.matches {
+        let changed = transaction
+            .execute(
+                "UPDATE sessions SET cwd = ?1, updated_at = ?2 WHERE id = ?3 AND deleted_at IS NULL AND LOWER(COALESCE(status, '')) <> 'working'",
+                params![replacement.new_cwd, updated_at, replacement.session_id],
+            )
+            .map_err(|error| format!("批量更新会话工作目录失败：{error}"))?;
+        if changed != 1 {
+            return Err(format!(
+                "会话 {} 状态已变化，已取消整批修改",
+                replacement.session_id
+            ));
+        }
+    }
+
+    transaction
+        .commit()
+        .map_err(|error| format!("提交工作目录批量替换失败：{error}"))?;
+    Ok(BatchReplaceSessionCwdResult {
+        updated: preview.matches.len(),
+        skipped_working: preview.skipped_working,
+        unchanged: preview.unchanged,
+    })
 }
 
 #[tauri::command]
@@ -233,6 +333,108 @@ fn required_trimmed(value: String, label: &str) -> Result<String, String> {
         return Err(format!("{label}不能为空"));
     }
     Ok(trimmed.to_string())
+}
+
+fn validate_batch_replace_input(input: &BatchReplaceSessionCwdInput) -> Result<(), String> {
+    if input.session_ids.is_empty() {
+        return Err("没有可处理的会话".to_string());
+    }
+    if input.session_ids.len() > 10_000 {
+        return Err("单次最多处理 10000 个会话".to_string());
+    }
+    for session_id in &input.session_ids {
+        validate_session_id(session_id)?;
+    }
+    if input.search.is_empty() {
+        return Err("查找内容不能为空".to_string());
+    }
+    if input.search.len() > 2000 || input.replacement.len() > 4000 {
+        return Err("查找或替换内容过长".to_string());
+    }
+    Ok(())
+}
+
+fn validate_replacement_expectations(
+    replacements: &[SessionCwdReplacementPreview],
+    expectations: &[SessionCwdReplacementExpectation],
+) -> Result<(), String> {
+    if replacements.len() != expectations.len() {
+        return Err("会话工作目录在预览后发生变化，请重新预览".to_string());
+    }
+    let all_match = replacements.iter().all(|replacement| {
+        expectations.iter().any(|expectation| {
+            expectation.session_id == replacement.session_id
+                && expectation.old_cwd == replacement.old_cwd
+                && expectation.new_cwd == replacement.new_cwd
+        })
+    });
+    if !all_match {
+        return Err("会话工作目录在预览后发生变化，请重新预览".to_string());
+    }
+    Ok(())
+}
+
+fn build_cwd_replacer(input: &BatchReplaceSessionCwdInput) -> Result<CwdReplacer, String> {
+    if input.is_regex {
+        return Regex::new(&input.search)
+            .map(CwdReplacer::Regex)
+            .map_err(|error| format!("正则表达式无效：{error}"));
+    }
+    Ok(CwdReplacer::Literal(input.search.clone()))
+}
+
+fn preview_cwd_replacements(
+    connection: &Connection,
+    input: &BatchReplaceSessionCwdInput,
+    replacer: &CwdReplacer,
+) -> Result<BatchReplaceSessionCwdPreviewResult, String> {
+    let mut matches = Vec::new();
+    let mut skipped_working = 0;
+    let mut unchanged = 0;
+
+    for session_id in &input.session_ids {
+        let Some(record) = load_session(connection, session_id)? else {
+            unchanged += 1;
+            continue;
+        };
+        if record
+            .status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("working"))
+        {
+            skipped_working += 1;
+            continue;
+        }
+        let new_cwd = replace_cwd(&record.cwd, &input.replacement, replacer);
+        if new_cwd == record.cwd {
+            unchanged += 1;
+            continue;
+        }
+        if new_cwd.trim().is_empty() {
+            return Err(format!("会话 {} 替换后的工作目录不能为空", record.id));
+        }
+        matches.push(SessionCwdReplacementPreview {
+            session_id: record.id,
+            title: non_empty(record.custom_title)
+                .or_else(|| non_empty(record.title))
+                .unwrap_or_else(|| "未命名会话".to_string()),
+            old_cwd: record.cwd,
+            new_cwd,
+        });
+    }
+
+    Ok(BatchReplaceSessionCwdPreviewResult {
+        matches,
+        skipped_working,
+        unchanged,
+    })
+}
+
+fn replace_cwd(value: &str, replacement: &str, replacer: &CwdReplacer) -> String {
+    match replacer {
+        CwdReplacer::Literal(search) => value.replace(search, replacement),
+        CwdReplacer::Regex(regex) => regex.replace_all(value, replacement).into_owned(),
+    }
 }
 
 fn find_session_paths(root: &Path, id: &str) -> Result<Vec<PathBuf>, String> {
@@ -378,4 +580,54 @@ fn non_empty(value: Option<String>) -> Option<String> {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        replace_cwd, validate_replacement_expectations, CwdReplacer,
+        SessionCwdReplacementExpectation, SessionCwdReplacementPreview,
+    };
+    use regex::Regex;
+
+    #[test]
+    fn literal_replacement_handles_windows_workspace_prefix() {
+        let replacer = CwdReplacer::Literal(r"E:\WorkSpace".to_string());
+        assert_eq!(
+            replace_cwd(r"E:\WorkSpace\project\service", r"D:\WorkSpace", &replacer),
+            r"D:\WorkSpace\project\service"
+        );
+    }
+
+    #[test]
+    fn regex_replacement_supports_capture_groups() {
+        let replacer = CwdReplacer::Regex(
+            Regex::new(r"^[A-Z]:\\WorkSpace\\([^\\]+)").expect("valid test regex"),
+        );
+        assert_eq!(
+            replace_cwd(
+                r"E:\WorkSpace\project\service",
+                r"D:\Projects\$1",
+                &replacer
+            ),
+            r"D:\Projects\project\service"
+        );
+    }
+
+    #[test]
+    fn replacement_expectations_reject_stale_preview() {
+        let replacements = vec![SessionCwdReplacementPreview {
+            session_id: "session-1".to_string(),
+            title: "Session".to_string(),
+            old_cwd: r"E:\WorkSpace\project".to_string(),
+            new_cwd: r"D:\WorkSpace\project".to_string(),
+        }];
+        let expectations = vec![SessionCwdReplacementExpectation {
+            session_id: "session-1".to_string(),
+            old_cwd: r"E:\WorkSpace\changed".to_string(),
+            new_cwd: r"D:\WorkSpace\changed".to_string(),
+        }];
+
+        assert!(validate_replacement_expectations(&replacements, &expectations).is_err());
+    }
 }

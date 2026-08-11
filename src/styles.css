@@ -884,6 +884,12 @@ td {
   flex: 0 0 auto;
 }
 
+.session-batch-button {
+  flex: 0 0 auto;
+  min-height: 42px;
+  white-space: nowrap;
+}
+
 .session-toolbar input {
   background: var(--color-surface);
   border: 1px solid var(--color-border-strong);
@@ -957,6 +963,118 @@ td {
 .session-card-actions .secondary-button,
 .session-card-actions .danger-button { min-height: 38px; width: 96px; }
 .session-card-actions small { color: var(--color-muted); font-size: 11px; }
+
+.session-batch-dialog {
+  max-width: 760px;
+  width: min(100%, 760px);
+}
+
+.session-batch-form {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.replace-mode-fieldset,
+.replace-preview,
+.session-batch-form .dialog-actions {
+  grid-column: 1 / -1;
+}
+
+.replace-mode-fieldset {
+  border: 0;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.replace-mode-fieldset legend {
+  margin-bottom: 7px;
+}
+
+.segmented-control {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 3px;
+}
+
+.segmented-control button {
+  background: transparent;
+  border: 0;
+  border-radius: calc(var(--radius-sm) - 2px);
+  color: var(--color-muted);
+  font-weight: 700;
+  min-height: 36px;
+}
+
+.segmented-control button.active {
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+}
+
+.replace-preview {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.replace-preview-summary {
+  align-items: center;
+  background: var(--color-surface-raised);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 11px 12px;
+}
+
+.replace-preview-summary strong {
+  color: var(--color-foreground);
+  font-size: 13px;
+}
+
+.replace-preview-summary span {
+  color: var(--color-muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.replace-preview-list {
+  display: grid;
+  gap: 1px;
+  max-height: min(300px, 38vh);
+  overflow-y: auto;
+}
+
+.replace-preview-item {
+  background: var(--color-surface);
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.replace-preview-item strong {
+  color: var(--color-foreground);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replace-preview-item span {
+  border-left: 3px solid var(--color-border-strong);
+  color: var(--color-muted);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  padding-left: 8px;
+}
+
+.replace-preview-item .new-path {
+  border-left-color: var(--color-success);
+  color: var(--color-foreground);
+}
 
 .theme-toggle {
   color: var(--color-accent);
@@ -1342,12 +1460,19 @@ td {
   .update-action { width: 100%; }
   .sync-unconfigured { align-items: stretch; flex-direction: column; }
   .session-toolbar {
+    flex-wrap: wrap;
     flex: 1 1 auto;
     justify-content: flex-start;
     width: 100%;
   }
 
-  .session-toolbar input { flex: 1 1 auto; }
+  .session-toolbar input { flex: 1 1 220px; }
+  .session-batch-button { flex: 1 1 auto; }
+  .session-batch-form { grid-template-columns: 1fr; }
+  .replace-preview-summary { align-items: flex-start; flex-direction: column; }
+  .replace-preview-summary span { text-align: left; }
+  .session-batch-form .dialog-actions { align-items: stretch; flex-direction: column-reverse; }
+  .session-batch-form .dialog-actions button { width: 100%; }
   .session-list { max-height: 60vh; padding: 14px; }
   .session-card { align-items: stretch; flex-direction: column; }
   .session-card-actions { align-items: stretch; }
