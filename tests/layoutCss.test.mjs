@@ -6,7 +6,9 @@ const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const main = readFileSync(new URL("../src/main.tsx", import.meta.url), "utf8");
 
 function declarationsFor(selector) {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = selector
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/\s+/g, "\\s*");
   const match = css.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
   assert.ok(match, `Missing CSS rule for ${selector}`);
   return match[1];
@@ -49,6 +51,19 @@ test("keeps provider list and dialogs in dedicated interaction regions", () => {
   assertDeclaration(".modal-backdrop", "position: fixed");
   assertDeclaration(".modal-backdrop", "inset: 0");
   assertDeclaration(".provider-dialog", "max-width: 520px");
+});
+
+test("keeps session cards at their content height inside the scroll region", () => {
+  assertDeclaration(".session-list", "flex: 1 1 auto");
+  assertDeclaration(".session-list", "align-content: start");
+  assertDeclaration(".session-list", "grid-auto-rows: max-content");
+  assertDeclaration(".session-list", "overflow-y: auto");
+});
+
+test("lets the session header grow when its controls wrap", () => {
+  assertDeclaration(".sessions-panel > .panel-header", "flex-shrink: 0");
+  assertDeclaration(".sessions-panel .panel-header-right", "display: grid");
+  assertDeclaration(".sessions-panel .session-toolbar", "width: 100%");
 });
 
 test("renders app prompts as a top-right toast layer outside the document flow", () => {

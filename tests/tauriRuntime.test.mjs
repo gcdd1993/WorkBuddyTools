@@ -14,12 +14,16 @@ test("detects Tauri globals without depending on the real window", () => {
 
 test("returns empty browser preview data for read commands", () => {
   assert.deepEqual(getBrowserPreviewResult("load_workbuddy_models"), []);
+  assert.deepEqual(getBrowserPreviewResult("load_codebuddy_models"), []);
   assert.deepEqual(getBrowserPreviewResult("load_providers"), []);
+  assert.deepEqual(getBrowserPreviewResult("list_codebuddy_sessions"), []);
 
   assert.deepEqual(getBrowserPreviewResult("get_paths"), {
     workbuddyDir: "浏览器预览",
     modelsFile: "Tauri 桌面运行时会读取 WorkBuddy 模型文件",
     providersFile: "Tauri 桌面运行时会读取供应商配置文件",
+    codebuddyDir: "浏览器预览",
+    codebuddyModelsFile: "Tauri 桌面运行时会读取 CodeBuddy 模型文件",
   });
 });
 

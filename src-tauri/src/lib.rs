@@ -1,3 +1,4 @@
+pub mod codebuddy_sessions;
 pub mod crypto;
 pub mod sessions;
 pub mod settings;
@@ -30,6 +31,14 @@ struct AppPaths {
     workbuddy_dir: String,
     models_file: String,
     providers_file: String,
+    codebuddy_dir: String,
+    codebuddy_models_file: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct CodeBuddyModelsFile {
+    #[serde(default)]
+    models: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,6 +131,8 @@ struct AddModelsPayload {
     provider_id: String,
     model_ids: Vec<String>,
     fetched_models: Vec<ProviderModel>,
+    #[serde(default)]
+    target: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,16 +143,24 @@ struct OpenAiModelsResponse {
 #[tauri::command]
 fn get_paths() -> Result<AppPaths, String> {
     let workbuddy_dir = workbuddy_dir()?;
+    let codebuddy_dir = codebuddy_dir()?;
     Ok(AppPaths {
         models_file: path_to_string(&workbuddy_dir.join(MODELS_FILE_NAME)),
         providers_file: path_to_string(&workbuddy_dir.join(PROVIDERS_FILE_NAME)),
         workbuddy_dir: path_to_string(&workbuddy_dir),
+        codebuddy_models_file: path_to_string(&codebuddy_dir.join(MODELS_FILE_NAME)),
+        codebuddy_dir: path_to_string(&codebuddy_dir),
     })
 }
 
 #[tauri::command]
 fn load_workbuddy_models() -> Result<Vec<Value>, String> {
     read_workbuddy_models()
+}
+
+#[tauri::command]
+fn load_codebuddy_models() -> Result<Vec<Value>, String> {
+    read_codebuddy_models()
 }
 
 #[tauri::command]
@@ -155,6 +174,20 @@ fn delete_workbuddy_model(model_id: String) -> Result<Vec<Value>, String> {
     }
 
     write_workbuddy_models(&models)?;
+    Ok(models)
+}
+
+#[tauri::command]
+fn delete_codebuddy_model(model_id: String) -> Result<Vec<Value>, String> {
+    let model_id = required_trimmed(model_id, "模型 ID")?;
+    let mut models = read_codebuddy_models()?;
+    let removed = remove_model_by_id(&mut models, &model_id);
+
+    if removed == 0 {
+        return Err("未找到要删除的模型".to_string());
+    }
+
+    write_codebuddy_models(&models)?;
     Ok(models)
 }
 
@@ -344,7 +377,14 @@ fn add_models_to_workbuddy(payload: AddModelsPayload) -> Result<AddModelsResult,
         .map(|model| (model.id.clone(), model))
         .collect::<HashMap<_, _>>();
 
-    let mut models = read_workbuddy_models()?;
+    let target = payload.target.as_deref().unwrap_or("workbuddy");
+    let is_codebuddy = target == "codebuddy";
+
+    let mut models = if is_codebuddy {
+        read_codebuddy_models()?
+    } else {
+        read_workbuddy_models()?
+    };
     let mut added = 0;
     let mut updated = 0;
 
@@ -366,7 +406,11 @@ fn add_models_to_workbuddy(payload: AddModelsPayload) -> Result<AddModelsResult,
         }
     }
 
-    write_workbuddy_models(&models)?;
+    if is_codebuddy {
+        write_codebuddy_models(&models)?;
+    } else {
+        write_workbuddy_models(&models)?;
+    }
     Ok(AddModelsResult {
         models,
         added,
@@ -391,6 +435,35 @@ fn read_workbuddy_models() -> Result<Vec<Value>, String> {
 
     serde_json::from_str::<Vec<Value>>(&content)
         .map_err(|err| format!("解析 WorkBuddy 模型配置失败：{err}"))
+}
+
+fn read_codebuddy_models() -> Result<Vec<Value>, String> {
+    let models_file = codebuddy_dir()?.join(MODELS_FILE_NAME);
+
+    if !models_file.exists() {
+        write_json_file(&models_file, &CodeBuddyModelsFile::default())?;
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(&models_file)
+        .map_err(|err| format!("读取 CodeBuddy 模型配置失败：{err}"))?;
+
+    if content.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // CodeBuddy models.json is { "models": [...] }
+    let parsed: CodeBuddyModelsFile = serde_json::from_str(&content)
+        .map_err(|err| format!("解析 CodeBuddy 模型配置失败：{err}"))?;
+    Ok(parsed.models)
+}
+
+fn write_codebuddy_models(models: &[Value]) -> Result<(), String> {
+    let models_file = codebuddy_dir()?.join(MODELS_FILE_NAME);
+    let wrapper = CodeBuddyModelsFile {
+        models: models.to_vec(),
+    };
+    write_json_file(&models_file, &wrapper)
 }
 
 fn write_workbuddy_models(models: &[Value]) -> Result<(), String> {
@@ -448,6 +521,12 @@ pub(crate) fn workbuddy_dir() -> Result<PathBuf, String> {
     let user_profile =
         env::var("USERPROFILE").map_err(|_| "无法读取 USERPROFILE 环境变量".to_string())?;
     Ok(PathBuf::from(user_profile).join(".workbuddy"))
+}
+
+pub(crate) fn codebuddy_dir() -> Result<PathBuf, String> {
+    let user_profile =
+        env::var("USERPROFILE").map_err(|_| "无法读取 USERPROFILE 环境变量".to_string())?;
+    Ok(PathBuf::from(user_profile).join(".codebuddy"))
 }
 
 fn provider_id_from_name(name: &str) -> String {
@@ -1177,7 +1256,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_paths,
             load_workbuddy_models,
+            load_codebuddy_models,
             delete_workbuddy_model,
+            delete_codebuddy_model,
             load_providers,
             save_provider,
             delete_provider,
@@ -1190,6 +1271,11 @@ pub fn run() {
             sessions::preview_workbuddy_session_cwd_replace,
             sessions::batch_replace_workbuddy_session_cwd,
             sessions::delete_workbuddy_session,
+            codebuddy_sessions::list_codebuddy_sessions,
+            codebuddy_sessions::update_codebuddy_session,
+            codebuddy_sessions::preview_codebuddy_session_cwd_replace,
+            codebuddy_sessions::batch_replace_codebuddy_session_cwd,
+            codebuddy_sessions::delete_codebuddy_session,
             webdav::webdav_test_connection,
             webdav::webdav_fetch_remote_info,
             webdav::webdav_upload_sync,

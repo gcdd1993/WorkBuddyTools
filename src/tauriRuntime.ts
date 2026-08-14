@@ -17,10 +17,14 @@ export function getBrowserPreviewResult(command: string, args?: Record<string, u
         workbuddyDir: "浏览器预览",
         modelsFile: "Tauri 桌面运行时会读取 WorkBuddy 模型文件",
         providersFile: "Tauri 桌面运行时会读取供应商配置文件",
+        codebuddyDir: "浏览器预览",
+        codebuddyModelsFile: "Tauri 桌面运行时会读取 CodeBuddy 模型文件",
       };
     case "load_workbuddy_models":
+    case "load_codebuddy_models":
     case "load_providers":
     case "list_workbuddy_sessions":
+    case "list_codebuddy_sessions":
       return [];
     case "webdav_fetch_remote_info":
       return null;
@@ -36,9 +40,13 @@ export function getBrowserPreviewResult(command: string, args?: Record<string, u
     case "webdav_run_sync":
       throw new Error("WebDAV 同步需要在 Tauri 桌面应用中运行。");
     case "update_workbuddy_session":
+    case "update_codebuddy_session":
     case "preview_workbuddy_session_cwd_replace":
+    case "preview_codebuddy_session_cwd_replace":
     case "batch_replace_workbuddy_session_cwd":
+    case "batch_replace_codebuddy_session_cwd":
     case "delete_workbuddy_session":
+    case "delete_codebuddy_session":
       throw new Error("会话管理需要在 Tauri 桌面应用中运行。");
     default:
       throw new Error("此操作需要在 Tauri 桌面应用中运行。");

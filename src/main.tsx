@@ -47,6 +47,10 @@ import "./styles.css";
 
 type TabKey = "models" | "providers" | "sessions";
 
+type ModelTarget = "workbuddy" | "codebuddy";
+
+type SessionTarget = "workbuddy" | "codebuddy";
+
 type WorkBuddySessionSummary = {
   id: string;
   title: string;
@@ -93,6 +97,14 @@ type BatchReplaceSessionCwdResult = {
 
 type DeleteSessionResult = {
   message?: string;
+};
+
+type DeleteCodeBuddySessionResult = {
+  sessionId: string;
+  deletedAt: number;
+  trashDir: string;
+  movedItems: number;
+  warning?: string | null;
 };
 
 type SyncStrategy = "smartMerge" | "remoteOverwriteLocal" | "localOverwriteRemote";
@@ -201,6 +213,8 @@ type AppPaths = {
   workbuddyDir: string;
   modelsFile: string;
   providersFile: string;
+  codebuddyDir: string;
+  codebuddyModelsFile: string;
 };
 
 type AppUpdateInfo = {
@@ -229,6 +243,8 @@ function App() {
   );
   const [paths, setPaths] = useState<AppPaths | null>(null);
   const [models, setModels] = useState<WorkBuddyModel[]>([]);
+  const [codebuddyModels, setCodebuddyModels] = useState<WorkBuddyModel[]>([]);
+  const [modelTarget, setModelTarget] = useState<ModelTarget>("workbuddy");
   const [providers, setProviders] = useState<Provider[]>([]);
   const [selectedProviderId, setSelectedProviderId] = useState<string>("");
   const [providerForm, setProviderForm] = useState<ProviderForm>(() => buildProviderForm());
@@ -253,8 +269,12 @@ function App() {
   const [syncResult, setSyncResult] = useState<WebDavSyncResult | null>(null);
   const [sessions, setSessions] = useState<WorkBuddySessionSummary[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionTarget, setSessionTarget] = useState<SessionTarget>("workbuddy");
+  const [codebuddySessions, setCodebuddySessions] = useState<WorkBuddySessionSummary[]>([]);
+  const [codebuddySessionsLoading, setCodebuddySessionsLoading] = useState(false);
   const [deletingSessionId, setDeletingSessionId] = useState("");
   const [editingSession, setEditingSession] = useState<WorkBuddySessionSummary | null>(null);
+  const [editingSessionTarget, setEditingSessionTarget] = useState<SessionTarget | null>(null);
   const [sessionEditForm, setSessionEditForm] = useState<SessionEditForm>({ title: "", cwd: "" });
   const [savingSession, setSavingSession] = useState(false);
   const [appVersion, setAppVersion] = useState("");
@@ -347,10 +367,14 @@ function App() {
   }, [providers, selectedProviderId]);
 
   useEffect(() => {
-    if (activeTab === "sessions" && sessions.length === 0) {
-      void refreshSessions();
+    if (activeTab === "sessions") {
+      if (sessionTarget === "workbuddy" && sessions.length === 0) {
+        void refreshSessions();
+      } else if (sessionTarget === "codebuddy" && codebuddySessions.length === 0) {
+        void refreshCodebuddySessions();
+      }
     }
-  }, [activeTab]);
+  }, [activeTab, sessionTarget]);
 
   useEffect(() => {
     if (
@@ -370,8 +394,15 @@ function App() {
   );
 
   const configuredIds = useMemo(() => {
-    return new Set(models.map((model) => model.id).filter(Boolean) as string[]);
-  }, [models]);
+    const ids = new Set<string>();
+    for (const model of models) {
+      if (model.id) ids.add(model.id);
+    }
+    for (const model of codebuddyModels) {
+      if (model.id) ids.add(model.id);
+    }
+    return ids;
+  }, [models, codebuddyModels]);
 
   async function refreshSessions() {
     setSessionsLoading(true);
@@ -385,9 +416,36 @@ function App() {
     }
   }
 
+  async function refreshCodebuddySessions() {
+    setCodebuddySessionsLoading(true);
+    setError("");
+    try {
+      setCodebuddySessions(await invokeCommand<WorkBuddySessionSummary[]>("list_codebuddy_sessions"));
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setCodebuddySessionsLoading(false);
+    }
+  }
+
+  async function handleDeleteCodeBuddySession(session: WorkBuddySessionSummary) {
+    if (!window.confirm(`确定将 CodeBuddy 会话"${session.title || session.id}"移入回收站吗？`)) return;
+    setDeletingSessionId(session.id);
+    setError("");
+    try {
+      const result = await invokeCommand<DeleteCodeBuddySessionResult>("delete_codebuddy_session", { sessionId: session.id });
+      setMessage(result.warning ?? "CodeBuddy 会话已移入回收站");
+      await refreshCodebuddySessions();
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setDeletingSessionId("");
+    }
+  }
+
   async function handleDeleteSession(session: WorkBuddySessionSummary) {
     if (session.status.toLowerCase() === "working") return;
-    if (!window.confirm(`确定将会话“${session.title || session.id}”移入回收站吗？`)) return;
+    if (!window.confirm(`确定将会话"${session.title || session.id}"移入回收站吗？`)) return;
     setDeletingSessionId(session.id);
     setError("");
     try {
@@ -449,12 +507,13 @@ function App() {
     }
   }
 
-  function openEditSessionDialog(session: WorkBuddySessionSummary) {
+  function openEditSessionDialog(session: WorkBuddySessionSummary, target: SessionTarget = sessionTarget) {
     if (session.status.toLowerCase() === "working") {
       setError("正在运行的会话不能编辑，请先结束会话");
       return;
     }
     setEditingSession(session);
+    setEditingSessionTarget(target);
     setSessionEditForm({
       title: session.title || "",
       cwd: session.cwd || "",
@@ -466,6 +525,7 @@ function App() {
       return;
     }
     setEditingSession(null);
+    setEditingSessionTarget(null);
     setSessionEditForm({ title: "", cwd: "" });
   }
 
@@ -476,7 +536,8 @@ function App() {
     setError("");
     setMessage("");
     try {
-      await invokeCommand("update_workbuddy_session", {
+      const target = editingSessionTarget ?? "workbuddy";
+      await invokeCommand(target === "codebuddy" ? "update_codebuddy_session" : "update_workbuddy_session", {
         input: {
           sessionId: editingSession.id,
           title: sessionEditForm.title,
@@ -485,8 +546,13 @@ function App() {
       });
       setMessage("会话已保存");
       setEditingSession(null);
+      setEditingSessionTarget(null);
       setSessionEditForm({ title: "", cwd: "" });
-      await refreshSessions();
+      if (target === "codebuddy") {
+        await refreshCodebuddySessions();
+      } else {
+        await refreshSessions();
+      }
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {
@@ -498,14 +564,16 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const [nextPaths, nextModels, nextProviders] = await Promise.all([
+      const [nextPaths, nextModels, nextCodebuddyModels, nextProviders] = await Promise.all([
         invokeCommand<AppPaths>("get_paths"),
         invokeCommand<WorkBuddyModel[]>("load_workbuddy_models"),
+        invokeCommand<WorkBuddyModel[]>("load_codebuddy_models"),
         invokeCommand<Provider[]>("load_providers"),
       ]);
 
       setPaths(nextPaths);
       setModels(nextModels);
+      setCodebuddyModels(nextCodebuddyModels);
       setProviders(nextProviders);
     } catch (err) {
       setError(toErrorMessage(err));
@@ -519,6 +587,16 @@ function App() {
     try {
       setModels(await invokeCommand<WorkBuddyModel[]>("load_workbuddy_models"));
       setMessage("已重新读取 WorkBuddy 模型配置");
+    } catch (err) {
+      setError(toErrorMessage(err));
+    }
+  }
+
+  async function refreshCodebuddyModelsOnly() {
+    setError("");
+    try {
+      setCodebuddyModels(await invokeCommand<WorkBuddyModel[]>("load_codebuddy_models"));
+      setMessage("已重新读取 CodeBuddy 模型配置");
     } catch (err) {
       setError(toErrorMessage(err));
     }
@@ -570,9 +648,13 @@ function App() {
       const nextProviders = await invokeCommand<Provider[]>("delete_provider", {
         providerId,
       });
-      const nextModels = await invokeCommand<WorkBuddyModel[]>("load_workbuddy_models");
+      const [nextModels, nextCodebuddyModels] = await Promise.all([
+        invokeCommand<WorkBuddyModel[]>("load_workbuddy_models"),
+        invokeCommand<WorkBuddyModel[]>("load_codebuddy_models"),
+      ]);
       setProviders(nextProviders);
       setModels(nextModels);
+      setCodebuddyModels(nextCodebuddyModels);
       if (selectedProviderId === providerId) {
         setSelectedProviderId(nextProviders[0]?.id ?? "");
         setFetchedModels([]);
@@ -625,7 +707,7 @@ function App() {
     await fetchModelsForProvider(selectedProviderId);
   }
 
-  async function handleAddModels() {
+  async function handleAddModels(target: ModelTarget) {
     if (!selectedProviderId) {
       setError("请先选择供应商");
       return;
@@ -647,12 +729,18 @@ function App() {
           providerId: selectedProviderId,
           modelIds,
           fetchedModels,
+          target,
         },
       });
-      setModels(result.models);
+      if (target === "codebuddy") {
+        setCodebuddyModels(result.models);
+      } else {
+        setModels(result.models);
+      }
       setSelectedModelIds(new Set());
       setActiveTab("models");
-      setMessage(`已添加 ${result.added} 个模型，更新 ${result.updated} 个模型`);
+      setModelTarget(target);
+      setMessage(`已添加 ${result.added} 个模型到 ${target === "codebuddy" ? "CodeBuddy" : "WorkBuddy"}，更新 ${result.updated} 个模型`);
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {
@@ -682,6 +770,35 @@ function App() {
       });
       setModels(nextModels);
       setMessage(`已删除模型 ${label}`);
+    } catch (err) {
+      setError(toErrorMessage(err));
+    } finally {
+      setDeletingModelId("");
+    }
+  }
+
+  async function handleDeleteCodeBuddyModel(model: WorkBuddyModel) {
+    const modelId = typeof model.id === "string" ? model.id : "";
+    if (!modelId) {
+      setError("模型 ID 为空，无法删除");
+      return;
+    }
+
+    const label = typeof model.name === "string" && model.name.length > 0 ? model.name : modelId;
+    if (!window.confirm(`确认删除 CodeBuddy 模型 ${label}？`)) {
+      return;
+    }
+
+    setDeletingModelId(modelId);
+    setError("");
+    setMessage("");
+
+    try {
+      const nextModels = await invokeCommand<WorkBuddyModel[]>("delete_codebuddy_model", {
+        modelId,
+      });
+      setCodebuddyModels(nextModels);
+      setMessage(`已删除 CodeBuddy 模型 ${label}`);
     } catch (err) {
       setError(toErrorMessage(err));
     } finally {
@@ -793,9 +910,9 @@ function App() {
           <p>{paths?.modelsFile ?? "读取 WorkBuddy 配置中..."}</p>
         </div>
         <div className="header-actions">
-          <div className="summary-pill" aria-label={`已配置 ${models.length} 个模型`}>
+          <div className="summary-pill" aria-label={`已配置 ${models.length + codebuddyModels.length} 个模型`}>
             <Database size={16} />
-            <span>{models.length}</span>
+            <span>{models.length + codebuddyModels.length}</span>
             <small>模型</small>
           </div>
           <div className="summary-pill" aria-label={`已配置 ${providers.length} 个供应商`}>
@@ -873,7 +990,7 @@ function App() {
         >
           <Database size={16} />
           <span>模型列表</span>
-          <span className="tab-count">{models.length}</span>
+          <span className="tab-count">{models.length + codebuddyModels.length}</span>
         </button>
         <button
           className={activeTab === "providers" ? "active" : ""}
@@ -895,15 +1012,21 @@ function App() {
         >
           <MessageSquare size={16} />
           <span>会话管理</span>
-          <span className="tab-count">{sessions.length}</span>
+          <span className="tab-count">{sessionTarget === "workbuddy" ? sessions.length : codebuddySessions.length}</span>
         </button>
       </nav>
 
       {activeTab === "models" ? (
         <ModelsTab
           models={models}
+          codebuddyModels={codebuddyModels}
+          modelTarget={modelTarget}
+          onTargetChange={setModelTarget}
+          paths={paths}
           onRefresh={refreshModelsOnly}
+          onRefreshCodebuddy={refreshCodebuddyModelsOnly}
           onDeleteModel={handleDeleteWorkBuddyModel}
+          onDeleteCodebuddyModel={handleDeleteCodeBuddyModel}
           loading={loading}
           deletingModelId={deletingModelId}
         />
@@ -937,21 +1060,31 @@ function App() {
       ) : (
         <SessionsTab
           sessions={sessions}
+          codebuddySessions={codebuddySessions}
+          sessionTarget={sessionTarget}
+          onTargetChange={setSessionTarget}
           loading={sessionsLoading}
+          codebuddyLoading={codebuddySessionsLoading}
           deletingSessionId={deletingSessionId}
           editingSession={editingSession}
           sessionEditForm={sessionEditForm}
           savingSession={savingSession}
           onRefresh={refreshSessions}
+          onRefreshCodebuddy={refreshCodebuddySessions}
           onEdit={openEditSessionDialog}
           onEditFormChange={setSessionEditForm}
           onSaveEdit={handleSaveSession}
           onCloseEdit={closeEditSessionDialog}
           onDelete={handleDeleteSession}
+          onDeleteCodebuddy={handleDeleteCodeBuddySession}
           onBatchComplete={async (result): Promise<void> => {
             const skipped = result.skippedWorking > 0 ? `，跳过 ${result.skippedWorking} 个运行中会话` : "";
             setMessage(`已更新 ${result.updated} 个会话的工作目录${skipped}`);
-            await refreshSessions();
+            if (sessionTarget === "codebuddy") {
+              await refreshCodebuddySessions();
+            } else {
+              await refreshSessions();
+            }
           }}
           onBatchError={(batchError): void => setError(batchError)}
         />
@@ -1044,76 +1177,118 @@ function SettingsPage({ settings, savedSettings, saving, strategy, syncLoading, 
 
 function SessionsTab({
   sessions,
+  codebuddySessions,
+  sessionTarget,
+  onTargetChange,
   loading,
+  codebuddyLoading,
   deletingSessionId,
   editingSession,
   sessionEditForm,
   savingSession,
   onRefresh,
+  onRefreshCodebuddy,
   onEdit,
   onEditFormChange,
   onSaveEdit,
   onCloseEdit,
   onDelete,
+  onDeleteCodebuddy,
   onBatchComplete,
   onBatchError,
 }: {
   sessions: WorkBuddySessionSummary[];
+  codebuddySessions: WorkBuddySessionSummary[];
+  sessionTarget: SessionTarget;
+  onTargetChange: (target: SessionTarget) => void;
   loading: boolean;
+  codebuddyLoading: boolean;
   deletingSessionId: string;
   editingSession: WorkBuddySessionSummary | null;
   sessionEditForm: SessionEditForm;
   savingSession: boolean;
   onRefresh: () => void;
+  onRefreshCodebuddy: () => void;
   onEdit: (session: WorkBuddySessionSummary) => void;
   onEditFormChange: (next: SessionEditForm) => void;
   onSaveEdit: (event: FormEvent) => void;
   onCloseEdit: () => void;
   onDelete: (session: WorkBuddySessionSummary) => void;
+  onDeleteCodebuddy: (session: WorkBuddySessionSummary) => void;
   onBatchComplete: (result: BatchReplaceSessionCwdResult) => Promise<void>;
   onBatchError: (message: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [batchEditing, setBatchEditing] = useState(false);
+  const isCodebuddy = sessionTarget === "codebuddy";
+  const activeSessions = isCodebuddy ? codebuddySessions : sessions;
+  const activeLoading = isCodebuddy ? codebuddyLoading : loading;
+  const activeRefresh = isCodebuddy ? onRefreshCodebuddy : onRefresh;
+  const activeDelete = isCodebuddy ? onDeleteCodebuddy : onDelete;
   const normalizedQuery = query.trim().toLowerCase();
-  const visibleSessions = sessions.filter((session) =>
+  const visibleSessions = activeSessions.filter((session) =>
     !normalizedQuery || session.title.toLowerCase().includes(normalizedQuery) || session.cwd.toLowerCase().includes(normalizedQuery),
   );
 
   return (
-    <section className="panel sessions-panel" aria-labelledby="sessions-title">
+    <section className={`panel sessions-panel${isCodebuddy ? " codebuddy-sessions-panel" : ""}`} aria-labelledby="sessions-title">
       <div className="panel-header">
-        <div className="session-heading"><h2 id="sessions-title">本机会话管理</h2><p>共 {sessions.length} 个会话，可按标题或工作目录搜索</p></div>
-        <div className="session-toolbar">
-          <button
-            className="icon-button session-refresh-button"
-            type="button"
-            onClick={onRefresh}
-            disabled={loading}
-            title="刷新会话列表"
-            aria-label="刷新会话列表"
-          >
-            {loading ? <Loader2 className="spin" size={18} /> : <RefreshCcw size={18} />}
-          </button>
-          <button
-            className="secondary-button session-batch-button"
-            type="button"
-            onClick={(): void => setBatchEditing(true)}
-            disabled={visibleSessions.length === 0 || loading}
-            title="批量替换当前筛选结果中的工作目录"
-          >
-            <Replace size={16} />
-            批量编辑
-          </button>
-          <input
-            id="session-search"
-            type="search"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="输入标题或工作目录"
-            aria-label="搜索会话"
-          />
-          <span>{visibleSessions.length} / {sessions.length}</span>
+        <div className="session-heading">
+          <h2 id="sessions-title">本机会话管理</h2>
+          <p>共 {activeSessions.length} 个{isCodebuddy ? " CodeBuddy" : ""}会话，可按标题或工作目录搜索</p>
+        </div>
+        <div className="panel-header-right">
+          <div className="sub-tabs" role="tablist" aria-label="会话目标切换">
+            <button
+              className={sessionTarget === "workbuddy" ? "active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={sessionTarget === "workbuddy"}
+              onClick={() => onTargetChange("workbuddy")}
+            >
+              WorkBuddy ({sessions.length})
+            </button>
+            <button
+              className={sessionTarget === "codebuddy" ? "active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={sessionTarget === "codebuddy"}
+              onClick={() => onTargetChange("codebuddy")}
+            >
+              CodeBuddy ({codebuddySessions.length})
+            </button>
+          </div>
+          <div className="session-toolbar">
+            <button
+              className="icon-button session-refresh-button"
+              type="button"
+              onClick={activeRefresh}
+              disabled={activeLoading}
+              title="刷新会话列表"
+              aria-label="刷新会话列表"
+            >
+              {activeLoading ? <Loader2 className="spin" size={18} /> : <RefreshCcw size={18} />}
+            </button>
+            <button
+              className="secondary-button session-batch-button"
+              type="button"
+              onClick={(): void => setBatchEditing(true)}
+              disabled={visibleSessions.length === 0 || activeLoading}
+              title="批量替换当前筛选结果中的工作目录"
+            >
+              <Replace size={16} />
+              批量编辑
+            </button>
+            <input
+              id="session-search"
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="输入标题或工作目录"
+              aria-label="搜索会话"
+            />
+            <span>{visibleSessions.length} / {activeSessions.length}</span>
+          </div>
         </div>
       </div>
       {visibleSessions.length ? (
@@ -1122,7 +1297,7 @@ function SessionsTab({
             const working = session.status.toLowerCase() === "working";
             const deleting = deletingSessionId === session.id;
             return (
-              <article className="session-card" key={session.id}>
+              <article className={`session-card${isCodebuddy ? " codebuddy-session-card" : ""}`} key={session.id}>
                 <div className="session-card-main">
                   <div className="session-title-row">
                     <h3>{session.title || "未命名会话"}</h3>
@@ -1130,7 +1305,7 @@ function SessionsTab({
                   </div>
                   <p className="session-cwd" title={session.cwd}>{session.cwd || "无工作目录"}</p>
                   <dl className="session-details">
-                    <div><dt>模型</dt><dd>{session.model || "未知"}</dd></div>
+                    {!isCodebuddy && <div><dt>模型</dt><dd>{session.model || "未知"}</dd></div>}
                     <div><dt>最后活动</dt><dd>{formatSessionTime(session.lastActivityAt || session.updatedAt)}</dd></div>
                     <div><dt>创建时间</dt><dd>{formatSessionTime(session.createdAt)}</dd></div>
                     <div><dt>文件大小</dt><dd>{formatBytes(session.sizeBytes)}</dd></div>
@@ -1140,7 +1315,7 @@ function SessionsTab({
                   <button className="secondary-button" type="button" disabled={working || Boolean(deletingSessionId)} onClick={() => onEdit(session)} title={working ? "正在运行的会话不能编辑" : "编辑会话"}>
                     <Pencil size={16} />编辑
                   </button>
-                  <button className="danger-button" type="button" disabled={working || Boolean(deletingSessionId)} onClick={() => onDelete(session)} title={working ? "正在运行的会话不能删除" : "移入会话回收站"}>
+                  <button className="danger-button" type="button" disabled={working || Boolean(deletingSessionId)} onClick={() => activeDelete(session)} title={working ? "正在运行的会话不能删除" : "移入会话回收站"}>
                     {deleting ? <Loader2 className="spin" size={16} /> : <Trash2 size={16} />}{working ? "运行中" : "删除"}
                   </button>
                   {working ? <small>正在运行，无法编辑或删除</small> : null}
@@ -1149,7 +1324,7 @@ function SessionsTab({
             );
           })}
         </div>
-      ) : <EmptyState label={loading ? "正在读取本机会话..." : normalizedQuery ? "没有匹配的会话" : "暂无本机会话"} />}
+      ) : <EmptyState label={activeLoading ? "正在读取本机会话..." : normalizedQuery ? "没有匹配的会话" : "暂无本机会话"} />}
       {editingSession ? (
         <SessionEditDialog
           session={editingSession}
@@ -1163,6 +1338,7 @@ function SessionsTab({
       {batchEditing ? (
         <SessionCwdBatchReplaceDialog
           sessions={visibleSessions}
+          target={sessionTarget}
           onClose={(): void => setBatchEditing(false)}
           onComplete={onBatchComplete}
           onError={onBatchError}
@@ -1174,11 +1350,13 @@ function SessionsTab({
 
 function SessionCwdBatchReplaceDialog({
   sessions,
+  target,
   onClose,
   onComplete,
   onError,
 }: {
   sessions: WorkBuddySessionSummary[];
+  target: SessionTarget;
   onClose: () => void;
   onComplete: (result: BatchReplaceSessionCwdResult) => Promise<void>;
   onError: (message: string) => void;
@@ -1225,7 +1403,7 @@ function SessionCwdBatchReplaceDialog({
     onError("");
     try {
       const result = await invokeCommand<BatchReplaceSessionCwdPreviewResult>(
-        "preview_workbuddy_session_cwd_replace",
+        target === "codebuddy" ? "preview_codebuddy_session_cwd_replace" : "preview_workbuddy_session_cwd_replace",
         { input: buildInput([]) },
       );
       setPreview(result);
@@ -1245,7 +1423,7 @@ function SessionCwdBatchReplaceDialog({
     onError("");
     try {
       const result = await invokeCommand<BatchReplaceSessionCwdResult>(
-        "batch_replace_workbuddy_session_cwd",
+        target === "codebuddy" ? "batch_replace_codebuddy_session_cwd" : "batch_replace_workbuddy_session_cwd",
         { input: buildInput(preview.matches) },
       );
       await onComplete(result);
@@ -1535,33 +1713,75 @@ function formatBytes(bytes: number) {
 
 function ModelsTab({
   models,
+  codebuddyModels,
+  modelTarget,
+  onTargetChange,
+  paths,
+  onRefresh,
+  onRefreshCodebuddy,
+  onDeleteModel,
+  onDeleteCodebuddyModel,
   loading,
   deletingModelId,
-  onRefresh,
-  onDeleteModel,
 }: {
   models: WorkBuddyModel[];
+  codebuddyModels: WorkBuddyModel[];
+  modelTarget: ModelTarget;
+  onTargetChange: (target: ModelTarget) => void;
+  paths: AppPaths | null;
+  onRefresh: () => void;
+  onRefreshCodebuddy: () => void;
+  onDeleteModel: (model: WorkBuddyModel) => void;
+  onDeleteCodebuddyModel: (model: WorkBuddyModel) => void;
   loading: boolean;
   deletingModelId: string;
-  onRefresh: () => void;
-  onDeleteModel: (model: WorkBuddyModel) => void;
 }) {
+  const isCodebuddy = modelTarget === "codebuddy";
+  const activeModels = isCodebuddy ? codebuddyModels : models;
+  const activeRefresh = isCodebuddy ? onRefreshCodebuddy : onRefresh;
+  const activeDelete = isCodebuddy ? onDeleteCodebuddyModel : onDeleteModel;
+  const activePaths = isCodebuddy
+    ? paths?.codebuddyModelsFile ?? "读取 CodeBuddy 配置中..."
+    : paths?.modelsFile ?? "读取 WorkBuddy 配置中...";
+
   return (
     <section className="panel" aria-labelledby="models-title">
       <div className="panel-header">
         <div>
           <h2 id="models-title">已配置模型</h2>
-          <p>{models.length} 个 WorkBuddy 模型</p>
+          <p>{activePaths}</p>
         </div>
-        <button
-          className="secondary-button"
-          type="button"
-          onClick={onRefresh}
-          disabled={loading}
-        >
-          <RefreshCcw size={16} />
-          重新读取
-        </button>
+        <div className="panel-header-right">
+          <div className="sub-tabs" role="tablist" aria-label="模型目标切换">
+            <button
+              className={modelTarget === "workbuddy" ? "active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={modelTarget === "workbuddy"}
+              onClick={() => onTargetChange("workbuddy")}
+            >
+              WorkBuddy ({models.length})
+            </button>
+            <button
+              className={modelTarget === "codebuddy" ? "active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={modelTarget === "codebuddy"}
+              onClick={() => onTargetChange("codebuddy")}
+            >
+              CodeBuddy ({codebuddyModels.length})
+            </button>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={activeRefresh}
+            disabled={loading}
+          >
+            <RefreshCcw size={16} />
+            重新读取
+          </button>
+        </div>
       </div>
 
       <div className="table-wrap">
@@ -1576,7 +1796,7 @@ function ModelsTab({
             </tr>
           </thead>
           <tbody>
-            {models.map((model, index) => (
+            {activeModels.map((model, index) => (
               <tr key={`${model.id ?? "unknown"}-${index}`}>
                 <td className="mono">{stringValue(model.id)}</td>
                 <td>{stringValue(model.name)}</td>
@@ -1607,7 +1827,7 @@ function ModelsTab({
                       deletingModelId === model.id ||
                       loading
                     }
-                    onClick={() => onDeleteModel(model)}
+                    onClick={() => activeDelete(model)}
                   >
                     {deletingModelId === model.id ? (
                       <Loader2 className="spin" size={16} />
@@ -1622,7 +1842,7 @@ function ModelsTab({
         </table>
       </div>
 
-      {models.length === 0 ? <EmptyState label="WorkBuddy 模型配置为空" /> : null}
+      {activeModels.length === 0 ? <EmptyState label={isCodebuddy ? "CodeBuddy 模型配置为空" : "WorkBuddy 模型配置为空"} /> : null}
     </section>
   );
 }
@@ -1676,7 +1896,7 @@ function ProvidersTab({
   onToggleModel: (modelId: string) => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
-  onAddModels: () => void;
+  onAddModels: (target: ModelTarget) => void;
 }) {
   return (
     <section className="providers-grid">
@@ -1786,7 +2006,7 @@ function ProvidersTab({
                 <span className="model-choice-main">
                   <span className="model-choice-title-row">
                     <span className="mono">{model.id}</span>
-                    {configured ? <span className="configured-pill">已在 WorkBuddy</span> : null}
+                    {configured ? <span className="configured-pill">已配置</span> : null}
                   </span>
                   <span className="model-choice-meta">
                     <TokenLimits
@@ -1808,11 +2028,20 @@ function ProvidersTab({
           <button
             className="primary-button"
             type="button"
-            onClick={onAddModels}
+            onClick={() => onAddModels("workbuddy")}
             disabled={selectedModelIds.size === 0 || addingModels}
           >
             {addingModels ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
             添加到 WorkBuddy
+          </button>
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => onAddModels("codebuddy")}
+            disabled={selectedModelIds.size === 0 || addingModels}
+          >
+            {addingModels ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
+            添加到 CodeBuddy
           </button>
         </div>
       </div>

@@ -7,6 +7,23 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-14
+
+### Added
+
+- Added CodeBuddy model configuration alongside WorkBuddy model management.
+- Added CodeBuddy session listing, editing, deletion, search, and batch working-directory replacement.
+
+### Changed
+
+- WorkBuddy and CodeBuddy model and session actions now use matching controls and interaction flows.
+- CodeBuddy sessions now resolve and update their real workspace paths from checkpoint metadata.
+
+### Fixed
+
+- Fixed session cards collapsing when many sessions are displayed.
+- Fixed session header controls overflowing into the session list.
+
 ## [0.3.1] - 2026-08-11
 
 ### Added
@@ -99,7 +116,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Initial tagged release of the WorkBuddy model configuration desktop application.
 - Added automated dependency updates and the initial build and release workflow.
 
-[Unreleased]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.5...v0.3.0
 [0.2.5]: https://github.com/gcdd1993/WorkBuddyTools/compare/v0.2.4...v0.2.5
